@@ -409,6 +409,61 @@
   .bd-item.dim:hover { background: transparent; }
   .bd-hint { font-size: 11px; color: #9aa4b1; line-height: 1.5; }
 
+  /* ---------- 书签：进度条标记 + 书签列表面板 ---------- */
+  .progress .bmarks {
+    position: absolute; inset: 0;
+    pointer-events: none;   /* 容器不拦截，子标记单独可点 */
+  }
+  .progress .bmark {
+    position: absolute; top: -7px;
+    transform: translateX(-50%);
+    width: 0; height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 7px solid #f59e0b;
+    pointer-events: auto; cursor: pointer;
+    filter: drop-shadow(0 1px 1px rgba(15, 23, 42, .3));
+  }
+  .progress .bmark:hover { border-top-color: #d97706; }
+  #bm-overlay {
+    position: fixed; inset: 0;
+    background: rgba(15, 23, 42, .38);
+    z-index: 55;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #bm-overlay[hidden] { display: none; }
+  #bm-dialog {
+    width: min(520px, 92vw);
+    max-height: min(560px, 80vh);
+    background: var(--panel);
+    border-radius: 12px;
+    box-shadow: 0 8px 30px rgba(15, 23, 42, .25);
+    display: flex; flex-direction: column;
+    padding: 14px 16px; gap: 10px;
+  }
+  .bm-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 12px; font-size: 13px; cursor: pointer;
+  }
+  .bm-row:hover { background: #f0f4f9; }
+  .bm-row .bm-time {
+    font-family: Consolas, monospace; font-size: 12px;
+    color: #d97706; font-weight: 700; flex: none;
+  }
+  .bm-row .bm-text {
+    flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    color: var(--text);
+  }
+  .bm-row .bm-del {
+    flex: none; color: #9aa4b1; font-size: 13px; padding: 2px 6px;
+    border-radius: 6px; cursor: pointer;
+  }
+  .bm-row .bm-del:hover { color: #dc2626; background: #fde8e8; }
+  .bm-empty { padding: 24px 12px; text-align: center; font-size: 13px; color: #9aa4b1; line-height: 1.8; }
+  .bm-footer { display: flex; align-items: center; gap: 8px; }
+  .bm-footer .bd-hint { flex: 1; }
+  .bm-footer button { font-size: 12px; }
+
   /* ---------- 版本号与变更记录弹窗 ---------- */
   .app-ver {
     font-size: 12px; color: var(--text-2); cursor: pointer;
@@ -490,7 +545,7 @@
 
 <header>
   <h1>🎧 音频字幕播放器</h1>
-  <span class="app-ver" id="app-ver" title="查看变更记录">v1.0</span>
+  <span class="app-ver" id="app-ver" title="查看变更记录">v1.1</span>
   <button class="btn primary" id="btn-audio">选择音频</button>
   <button class="btn" id="btn-sub">选择字幕 (SRT/VTT/LRC/转写txt)</button>
   <span class="file-name" id="file-name">未加载文件</span>
@@ -540,6 +595,7 @@
       <div class="track">
         <div class="buffered" id="buffered"></div>
         <div class="played" id="played"></div>
+        <div class="bmarks" id="bmarks"></div>
         <div class="knob" id="knob"></div>
       </div>
     </div>
@@ -561,6 +617,11 @@
       <input type="range" id="volume" min="0" max="100" value="100">
     </div>
 
+    <div class="volume-wrap">
+      <button class="icon-btn" id="btn-bookmark" title="在当前时刻打书签 (B)">🔖</button>
+      <button class="icon-btn" id="btn-bm-list" title="书签列表">📑</button>
+    </div>
+
     <div class="chip-group" id="speed-group">
       <span class="label">倍速</span>
       <button class="chip" data-speed="0.5">0.5x</button>
@@ -571,7 +632,7 @@
     </div>
 
     <span class="hotkey-help">
-      <kbd>←</kbd><kbd>→</kbd> ±5s　<kbd>Shift</kbd> ±10s　<kbd>Ctrl</kbd> ±20s　<kbd>Alt</kbd> ±30s　<kbd>空格</kbd> 播放/暂停
+      <kbd>←</kbd><kbd>→</kbd> ±5s　<kbd>Shift</kbd> ±10s　<kbd>Ctrl</kbd> ±20s　<kbd>Alt</kbd> ±30s　<kbd>空格</kbd> 播放/暂停　<kbd>B</kbd> 书签
     </span>
   </div>
 </div>
@@ -597,6 +658,21 @@
   </div>
 </div>
 
+<!-- 书签列表 -->
+<div id="bm-overlay" hidden>
+  <div id="bm-dialog">
+    <div class="bd-title">
+      <span id="bm-title">书签</span>
+      <button class="btn" id="bm-close">关闭</button>
+    </div>
+    <div class="bd-list" id="bm-list"></div>
+    <div class="bm-footer">
+      <span class="bd-hint">点击书签跳到该时刻；B 键随时在当前播放位置打书签。书签随列表记录自动保存。</span>
+      <button class="btn" id="bm-clear">清空全部</button>
+    </div>
+  </div>
+</div>
+
 <!-- 关于 / 变更记录 -->
 <div id="about-overlay" hidden>
   <div id="about-dialog">
@@ -615,8 +691,18 @@
   "use strict";
 
   /* ---------- 版本与变更记录（播放器自身，与字幕文件无关） ---------- */
-  const APP_VERSION = "v1.0";
+  const APP_VERSION = "v1.1";
   const APP_CHANGELOG = [
+    {
+      ver: "v1.1", date: "2026-09-12",
+      features: [
+        "书签：播放中按 B 键或点 🔖 按钮在当前时刻打书签（不打断收听），自动带上当时字幕句作为标识",
+        "进度条上显示书签小三角标记，点击标记直接跳转到该时刻",
+        "书签列表面板（📑）：查看全部书签、点击跳转、删除单条、一键清空",
+        "书签随「我的列表」记录自动保存（浏览器 IndexedDB 与本地服务模式双通道），续播时自动恢复"
+      ],
+      fixes: []
+    },
     {
       ver: "v1.0", date: "2026-09-12",
       features: [
@@ -673,6 +759,9 @@
     exportSub: document.getElementById("btn-export-sub"),
     editTip: document.getElementById("edit-tip"),
     subLabel: document.getElementById("sub-panel-label"),
+    bmarks: document.getElementById("bmarks"),
+    btnBookmark: document.getElementById("btn-bookmark"),
+    btnBmList: document.getElementById("btn-bm-list"),
   };
 
   let subtitles = [];   // [{start, end, text}]
@@ -1126,6 +1215,135 @@
     clearTimeout(notify._t);
     notify._t = setTimeout(() => el.classList.remove("show"), 3600);
   }
+
+  /* ---------- 书签：任意时刻打点，点标记/列表项跳转，随记录持久化 ---------- */
+  const bm = {
+    overlay: document.getElementById("bm-overlay"),
+    list: document.getElementById("bm-list"),
+    title: document.getElementById("bm-title"),
+  };
+  function bookmarksOf() {
+    if (!currentRecord) return null;
+    if (!Array.isArray(currentRecord.bookmarks)) currentRecord.bookmarks = [];
+    return currentRecord.bookmarks;
+  }
+  function addBookmark() {
+    if (!audio.src) { notify("先加载音频，再打书签。"); return; }
+    const arr = bookmarksOf();
+    if (!arr) { notify("列表记录尚未就绪，稍等片刻再按 B。"); return; }
+    const t = audio.currentTime || 0;
+    // 书签标识：优先取当前高亮句，否则二分找包含该时刻的句子
+    let text = "";
+    if (activeIndex >= 0 && subtitles[activeIndex] &&
+        t >= subtitles[activeIndex].start && t <= subtitles[activeIndex].end) {
+      text = subtitles[activeIndex].text;
+    } else {
+      let lo = 0, hi = subtitles.length - 1, r = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const s = subtitles[mid];
+        if (t < s.start) hi = mid - 1;
+        else if (t > s.end) lo = mid + 1;
+        else { r = mid; break; }
+      }
+      if (r >= 0) text = subtitles[r].text;
+    }
+    // ±0.5s 内视为同一书签：覆盖而非新增
+    const near = arr.find(b => Math.abs(b.t - t) <= 0.5);
+    if (near) { near.t = t; near.text = text; }
+    else arr.push({ t: t, text: text });
+    arr.sort((a, b) => a.t - b.t);
+    renderBookmarkMarks();
+    if (!bm.overlay.hidden) renderBookmarkList();
+    notify("已加书签 " + fmt(t));
+    savePosition();
+  }
+  function renderBookmarkMarks() {
+    els.bmarks.innerHTML = "";
+    const d = audio.duration;
+    const arr = currentRecord && Array.isArray(currentRecord.bookmarks) ? currentRecord.bookmarks : [];
+    if (!arr.length || !d) return;
+    for (const b of arr) {
+      const mark = document.createElement("div");
+      mark.className = "bmark";
+      mark.style.left = Math.min(100, Math.max(0, (b.t / d) * 100)) + "%";
+      mark.title = "书签 " + fmt(b.t) + (b.text ? "：" + b.text : "");
+      // pointerdown 阻止冒泡：不触发进度条拖动的 pointer capture
+      mark.addEventListener("pointerdown", e => e.stopPropagation());
+      mark.addEventListener("click", e => {
+        e.stopPropagation();
+        audio.currentTime = b.t;
+        updateProgressUI();
+        updateSubtitle();
+      });
+      els.bmarks.appendChild(mark);
+    }
+  }
+  function removeBookmark(i) {
+    const arr = bookmarksOf();
+    if (!arr || i < 0 || i >= arr.length) return;
+    arr.splice(i, 1);
+    renderBookmarkMarks();
+    renderBookmarkList();
+    savePosition();
+  }
+  function clearBookmarks() {
+    const arr = bookmarksOf();
+    if (!arr || !arr.length) return;
+    if (!confirm("确定清空当前音频的全部书签？")) return;
+    arr.length = 0;
+    renderBookmarkMarks();
+    renderBookmarkList();
+    savePosition();
+  }
+  function renderBookmarkList() {
+    const arr = currentRecord && Array.isArray(currentRecord.bookmarks) ? currentRecord.bookmarks : [];
+    bm.title.textContent = "书签 · " + arr.length + (currentAudioName ? "（" + currentAudioName + "）" : "");
+    bm.list.innerHTML = "";
+    if (!arr.length) {
+      const empty = document.createElement("div");
+      empty.className = "bm-empty";
+      empty.textContent = "暂无书签。播放中按 B 键或点 🔖 按钮，\n即可在当前时刻打一个书签。";
+      empty.style.whiteSpace = "pre-line";
+      bm.list.appendChild(empty);
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    arr.forEach((b, i) => {
+      const row = document.createElement("div");
+      row.className = "bm-row";
+      row.title = "跳到 " + fmt(b.t);
+      const time = document.createElement("span");
+      time.className = "bm-time";
+      time.textContent = fmt(b.t);
+      const text = document.createElement("span");
+      text.className = "bm-text";
+      text.textContent = b.text || "（无字幕）";
+      const del = document.createElement("span");
+      del.className = "bm-del";
+      del.textContent = "✕";
+      del.title = "删除此书签";
+      del.addEventListener("click", e => { e.stopPropagation(); removeBookmark(i); });
+      row.appendChild(time);
+      row.appendChild(text);
+      row.appendChild(del);
+      row.addEventListener("click", () => {
+        audio.currentTime = b.t;
+        updateProgressUI();
+        updateSubtitle();
+        closeBookmarks();
+      });
+      frag.appendChild(row);
+    });
+    bm.list.appendChild(frag);
+  }
+  function openBookmarks() { renderBookmarkList(); bm.overlay.hidden = false; }
+  function closeBookmarks() { bm.overlay.hidden = true; }
+  document.getElementById("btn-bookmark").addEventListener("click", addBookmark);
+  document.getElementById("btn-bm-list").addEventListener("click", openBookmarks);
+  document.getElementById("bm-close").addEventListener("click", closeBookmarks);
+  document.getElementById("bm-clear").addEventListener("click", clearBookmarks);
+  bm.overlay.addEventListener("click", e => { if (e.target === bm.overlay) closeBookmarks(); });
   /* 切换音频/字幕前拦截未保存的修改 */
   function guardUnsaved() {
     if (!subDirty) return true;
@@ -1308,6 +1526,7 @@
           audioPath: currentRecord.audioPath || "",
           audio: currentRecord.audio || "",
           position: currentRecord.position,
+          bookmarks: currentRecord.bookmarks || [],
         }).then(() => { if (serverOK) renderPlaylist(); });
       } else if (!serverOK) {
         dbPut(currentRecord).then(renderPlaylist);
@@ -1470,6 +1689,7 @@
         audio.currentTime = it.position;
       }
       updateProgressUI();
+      renderBookmarkMarks();   // 书签随续播恢复到进度条
       audio.removeEventListener("loadedmetadata", seek);
     };
     audio.addEventListener("loadedmetadata", seek);
@@ -1489,6 +1709,7 @@
         audioPath: audioPath,
         subPath: subPath || (old ? (old.subPath || "") : ""),
         position: old ? (old.position || 0) : 0,
+        bookmarks: old ? (old.bookmarks || []) : [],
         updated: Date.now(),
       };
       srvPost("/api/entry", entry).then(() => playServerEntry(entry));
@@ -1647,6 +1868,7 @@
         audio.currentTime = rec.position;
       }
       updateProgressUI();
+      renderBookmarkMarks();   // 书签随续播恢复到进度条
       audio.removeEventListener("loadedmetadata", seek);
     };
     audio.addEventListener("loadedmetadata", seek);
@@ -1684,9 +1906,11 @@
         subName: pairSubText != null ? lastSubRawName : (old ? old.subName : ""),
         subText: pairSubText != null ? pairSubText : (old ? old.subText : ""),
         position: old ? old.position : 0,
+        bookmarks: old ? (old.bookmarks || []) : [],
         updated: Date.now(),
       };
       dbPut(currentRecord).then(renderPlaylist);
+      renderBookmarkMarks();   // 同一音频再次加载：恢复已存书签（旧记录无字段则清空标记）
       // 同一音频再次加载且当前没有字幕时，自动带出已保存字幕
       if (pairSubText == null && old && old.subText && !subtitles.length) {
         loadSubtitleText(old.subText, old.subName);
@@ -1709,7 +1933,7 @@
         currentRecord.updated = Date.now();
         if (serverOK && (currentRecord.audioPath || currentRecord.audio)) {
           // 服务模式：把字幕路径登记到列表（不复制文件）
-          const payload = { position: currentRecord.position || 0 };
+          const payload = { position: currentRecord.position || 0, bookmarks: currentRecord.bookmarks || [] };
           if (currentRecord.audioPath) {
             payload.audioPath = currentRecord.audioPath;
             payload.subPath = currentRecord.subPath || "";
@@ -1899,7 +2123,7 @@
 
   /* ---------- audio 事件 ---------- */
   audio.addEventListener("timeupdate", () => { updateProgressUI(); updateSubtitle(); });
-  audio.addEventListener("loadedmetadata", updateProgressUI);
+  audio.addEventListener("loadedmetadata", () => { updateProgressUI(); renderBookmarkMarks(); });
   audio.addEventListener("progress", updateProgressUI);
   audio.addEventListener("play", () => { els.play.textContent = "⏸"; });
   audio.addEventListener("pause", () => { els.play.textContent = "▶"; });
@@ -1931,6 +2155,11 @@
       if (e.key === "Escape") { e.preventDefault(); closeBrowse(); }
       return;
     }
+    // 书签面板打开时：Esc 关闭，其余交给面板
+    if (!bm.overlay.hidden) {
+      if (e.key === "Escape") { e.preventDefault(); closeBookmarks(); }
+      return;
+    }
     // 正在编辑字幕文本：不拦截按键（否则空格没法打、方向键变跳转）
     if (e.target.isContentEditable) {
       if (e.key === "Escape") e.target.blur();
@@ -1960,6 +2189,7 @@
         audio.volume = Math.max(0, audio.volume - 0.05);
         els.volume.value = audio.volume * 100; syncMuteUI(); break;
       case "m": case "M": audio.muted = !audio.muted; syncMuteUI(); break;
+      case "b": case "B": e.preventDefault(); addBookmark(); break;
       case "[": setSpeed(Math.max(0.25, audio.playbackRate - 0.25)); break;
       case "]": setSpeed(Math.min(3, audio.playbackRate + 0.25)); break;
     }

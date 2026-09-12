@@ -84,6 +84,18 @@ def save_playlist(items):
     atomic_write(PLAYLIST, json.dumps(items, ensure_ascii=False, indent=2).encode("utf-8"))
 
 
+def clean_bookmarks(data):
+    """从请求里取书签数组，过滤非法项；缺字段返回 None（表示本次请求不带书签，不覆盖）"""
+    if "bookmarks" not in data or data["bookmarks"] is None:
+        return None
+    out = []
+    for b in data["bookmarks"] or []:
+        if isinstance(b, dict) and isinstance(b.get("t"), (int, float)) and b["t"] >= 0:
+            out.append({"t": round(float(b["t"]), 3), "text": str(b.get("text") or "")[:200]})
+    out.sort(key=lambda x: x["t"])
+    return out
+
+
 def atomic_write(fp, data):
     """优先临时文件+原子替换；沙箱/杀软拦截 rename 时退化为直接写入"""
     tmp = fp + ".tmp"
@@ -366,6 +378,9 @@ class Handler(BaseHTTPRequestHandler):
                     found["subPath"] = data["subPath"].strip()  # 旧条目配新字幕：也允许按路径
             found["position"] = float(data.get("position") or 0)
             found["updated"] = int(data.get("updated") or now_ms())
+            bms = clean_bookmarks(data)
+            if bms is not None:
+                found["bookmarks"] = bms
             save_playlist(items)
             return self._json({"ok": True})
 
@@ -387,6 +402,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": False, "error": "not found"}, 404)
             it["position"] = float(data.get("position") or 0)
             it["updated"] = now_ms()
+            bms = clean_bookmarks(data)
+            if bms is not None:
+                it["bookmarks"] = bms
             save_playlist(items)
             return self._json({"ok": True})
 
