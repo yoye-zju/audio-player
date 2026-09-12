@@ -1,0 +1,1983 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>音频字幕播放器</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --border: #e2e5ea;
+    --text: #1f2733;
+    --text-2: #5a6572;
+    --accent: #2563eb;
+    --accent-soft: #dbeafe;
+    --highlight: #fff7ed;
+    --highlight-border: #f59e0b;
+    --shadow: 0 1px 3px rgba(15, 23, 42, .06), 0 4px 12px rgba(15, 23, 42, .05);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    padding: 16px 20px;
+    gap: 12px;
+    user-select: none;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  header h1 { font-size: 18px; font-weight: 700; margin-right: 8px; }
+  header .file-name { font-size: 13px; color: var(--text-2); margin-left: auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .btn {
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    color: var(--text);
+    font-size: 13px;
+    cursor: pointer;
+    transition: background .15s, border-color .15s;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: #1d4ed8; }
+  .btn:active { transform: translateY(1px); }
+
+  /* 主区域：字幕大字 + 全文列表 */
+  main { flex: 1; display: flex; gap: 12px; min-height: 0; }
+  .stage {
+    flex: 1.2;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 48px;
+    text-align: center;
+    overflow: hidden;
+  }
+  .stage .placeholder { color: #9aa4b1; font-size: 14px; line-height: 2.2; }
+  .stage .placeholder kbd { margin: 0 2px; }
+  #current-sub {
+    font-size: clamp(20px, 3.2vw, 34px);
+    line-height: 1.7;
+    font-weight: 600;
+    white-space: pre-wrap;
+    max-width: 100%;
+    max-height: 100%;
+    overflow-y: auto;
+    user-select: text;
+  }
+
+  .transcript {
+    flex: 1;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .transcript .panel-title {
+    font-size: 12px;
+    color: var(--text-2);
+    padding: 10px 14px 8px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+  }
+  #subtitle-list { flex: 1; overflow-y: auto; padding: 6px 0; }
+  .sub-item {
+    padding: 7px 14px;
+    font-size: 14px;
+    line-height: 1.6;
+    cursor: pointer;
+    border-left: 3px solid transparent;
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+  }
+  .sub-item:hover { background: #f0f4f9; }
+  .sub-item .t {
+    font-size: 11px;
+    color: #9aa4b1;
+    font-family: Consolas, monospace;
+    flex-shrink: 0;
+    min-width: 52px;
+  }
+  .sub-item .txt { user-select: text; }
+  .sub-item.active {
+    background: var(--highlight);
+    border-left-color: var(--highlight-border);
+  }
+  .sub-item.active .t { color: var(--highlight-border); font-weight: 700; }
+
+  /* 字幕编辑态：时间轴只读，文本可改 */
+  .sub-tools { display: flex; align-items: center; gap: 6px; }
+  .sub-tools .pl-open-btn.thin { padding: 2px 7px; }
+  .pl-open-btn.dirty {
+    background: var(--highlight-border);
+    border-color: var(--highlight-border);
+    color: #fff;
+    font-weight: 700;
+  }
+  #subtitle-list.editing .sub-item { cursor: text; }
+  #subtitle-list.editing .sub-item:hover { background: #f8fafc; }
+  /* 编辑态下当前播放行依然高亮（不被编辑态 hover 规则盖掉） */
+  #subtitle-list.editing .sub-item.active,
+  #subtitle-list.editing .sub-item.active:hover {
+    background: var(--highlight);
+    border-left-color: var(--highlight-border);
+  }
+  #subtitle-list.editing .sub-item.active .t { color: var(--highlight-border); font-weight: 700; }
+  #subtitle-list.editing .sub-item .txt[contenteditable="true"] {
+    flex: 1;
+    min-width: 0;
+    /* 上下 padding 用 margin 抵消，编辑态不改变行高（避免滚动位置偏移） */
+    padding: 0 6px;
+    margin: 0 -6px;
+    border-radius: 5px;
+    outline: none;
+    border-bottom: 1px dashed transparent;
+  }
+  /* 编辑态：contenteditable 默认会把行高撑高几像素，按实际比例微调 line-height 抵消 */
+  #subtitle-list.editing .sub-item { line-height: calc(1.6em - 1px); }
+  #subtitle-list.editing .sub-item .txt[contenteditable="true"]:hover { border-bottom-color: #cbd5e1; }
+  #subtitle-list.editing .sub-item .txt[contenteditable="true"]:focus {
+    background: #fff;
+    border-bottom-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+  }
+  #subtitle-list.editing .sub-item .t {
+    color: var(--text-2);
+    opacity: .75;
+    cursor: not-allowed;
+    user-select: none;
+  }
+  #edit-tip { font-size: 11px; color: var(--highlight-border); }
+
+  /* 轻提示条 */
+  #toast {
+    position: fixed;
+    left: 50%;
+    bottom: 26px;
+    transform: translate(-50%, 12px);
+    background: rgba(31, 39, 51, .95);
+    color: #fff;
+    font-size: 12.5px;
+    line-height: 1.5;
+    padding: 9px 16px;
+    border-radius: 8px;
+    max-width: 72vw;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, .28);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .18s, transform .18s;
+    z-index: 90;
+    word-break: break-all;
+  }
+  #toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  /* 我的列表面板 */
+  .playlist {
+    width: 236px;
+    flex-shrink: 0;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .playlist .panel-title {
+    font-size: 12px;
+    color: var(--text-2);
+    padding: 10px 14px 8px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+  }
+  .pl-open-btn {
+    font-size: 11px;
+    padding: 3px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    cursor: pointer;
+    color: var(--text-2);
+    white-space: nowrap;
+  }
+  .pl-open-btn:hover { border-color: var(--accent); color: var(--accent); }
+  #playlist-list { flex: 1; overflow-y: auto; padding: 4px 0; }
+  .pl-item {
+    padding: 8px 12px 8px 10px;
+    cursor: pointer;
+    border-left: 3px solid transparent;
+    position: relative;
+  }
+  .pl-item:hover { background: #f0f4f9; }
+  .pl-item.active { background: var(--accent-soft); border-left-color: var(--accent); }
+  .pl-item .name {
+    font-size: 13px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding-right: 16px;
+  }
+  .pl-item .meta {
+    font-size: 11px;
+    color: var(--text-2);
+    margin-top: 2px;
+    font-family: Consolas, monospace;
+  }
+  .pl-item .del {
+    position: absolute;
+    right: 8px;
+    top: 7px;
+    font-size: 11px;
+    color: #b3bcc7;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+  }
+  .pl-item .del:hover { color: #dc2626; background: #fee2e2; }
+  .pl-hint {
+    font-size: 11px;
+    color: #9aa4b1;
+    padding: 8px 12px;
+    border-top: 1px solid var(--border);
+    line-height: 1.5;
+  }
+
+  /* 控制区 */
+  .controls {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    padding: 12px 18px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .progress-wrap { display: flex; align-items: center; gap: 12px; font-size: 12px; font-family: Consolas, monospace; color: var(--text-2); }
+  .progress {
+    flex: 1;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    touch-action: none;
+  }
+  .progress .track {
+    position: relative;
+    width: 100%;
+    height: 6px;
+    border-radius: 3px;
+    background: #dde2e9;
+  }
+  .progress:hover .track, .progress.dragging .track { height: 8px; }
+  .progress .buffered, .progress .played {
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    border-radius: 3px;
+  }
+  .progress .buffered { background: #c3cddb; width: 0; }
+  .progress .played { background: var(--accent); width: 0; }
+  .progress .knob {
+    position: absolute;
+    top: 50%;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 1px 4px rgba(37, 99, 235, .4);
+    transform: translate(-50%, -50%);
+    left: 0;
+    opacity: 0;
+    transition: opacity .1s;
+  }
+  .progress:hover .knob, .progress.dragging .knob { opacity: 1; }
+
+  .row2 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .row2 .icon-btn {
+    min-width: 34px; width: auto; height: 34px; padding: 0 9px;
+    border-radius: 17px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    cursor: pointer;
+    font-size: 14px;
+    color: var(--text);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .row2 .icon-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .row2 .icon-btn.big { width: 42px; height: 42px; background: var(--accent); border-color: var(--accent); color: #fff; font-size: 17px; }
+  .row2 .icon-btn.big:hover { background: #1d4ed8; }
+
+  .chip-group { display: flex; gap: 4px; margin-left: 8px; align-items: center; }
+  .chip-group .label { font-size: 12px; color: var(--text-2); margin-right: 4px; }
+  .chip {
+    padding: 3px 9px;
+    font-size: 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    cursor: pointer;
+    color: var(--text-2);
+    font-family: Consolas, monospace;
+  }
+  .chip:hover { border-color: var(--accent); color: var(--accent); }
+  .chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 700; }
+
+  .volume-wrap { display: flex; align-items: center; gap: 6px; margin-left: 4px; }
+  .volume-wrap input[type=range] { width: 90px; accent-color: var(--accent); cursor: pointer; }
+
+  .hotkey-help { margin-left: auto; font-size: 12px; color: var(--text-2); }
+  kbd {
+    display: inline-block;
+    padding: 1px 6px;
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    background: #fafbfc;
+    font-family: Consolas, monospace;
+    font-size: 11px;
+    color: var(--text);
+  }
+
+  audio { display: none; }
+
+  /* ---------- 目录浏览弹窗 ---------- */
+  #browse-overlay {
+    position: fixed; inset: 0;
+    background: rgba(15, 23, 42, .38);
+    z-index: 50;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #browse-overlay[hidden] { display: none; }
+  #browse-dialog {
+    width: min(640px, 92vw);
+    height: min(560px, 80vh);
+    background: var(--panel);
+    border-radius: 12px;
+    box-shadow: 0 8px 30px rgba(15, 23, 42, .25);
+    display: flex; flex-direction: column;
+    padding: 14px 16px; gap: 10px;
+  }
+  .bd-title { display: flex; align-items: center; font-size: 15px; font-weight: 700; }
+  .bd-title button { margin-left: auto; }
+  .bd-path-row { display: flex; gap: 6px; }
+  .bd-path-row input {
+    flex: 1; padding: 6px 10px;
+    border: 1px solid var(--border); border-radius: 8px;
+    font-size: 12px; font-family: Consolas, monospace; color: var(--text);
+  }
+  .bd-path-row input:focus { outline: none; border-color: var(--accent); }
+  .bd-list {
+    flex: 1; overflow-y: auto;
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 4px 0;
+  }
+  .bd-item {
+    padding: 6px 12px; font-size: 13px; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-family: Consolas, "Microsoft YaHei", monospace;
+  }
+  .bd-item:hover { background: #f0f4f9; }
+  .bd-item.dim { color: #b3bcc7; cursor: default; }
+  .bd-item.dim:hover { background: transparent; }
+  .bd-hint { font-size: 11px; color: #9aa4b1; line-height: 1.5; }
+
+  /* ---------- 版本号与变更记录弹窗 ---------- */
+  .app-ver {
+    font-size: 12px; color: var(--text-2); cursor: pointer;
+    padding: 2px 8px; border: 1px solid var(--border); border-radius: 10px;
+    background: var(--panel); line-height: 1.5; user-select: none;
+    transition: color .15s, border-color .15s;
+  }
+  .app-ver:hover { color: var(--accent); border-color: var(--accent); }
+  #about-overlay {
+    position: fixed; inset: 0;
+    background: rgba(15, 23, 42, .38);
+    z-index: 60;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #about-overlay[hidden] { display: none; }
+  #about-dialog {
+    width: min(560px, 92vw);
+    max-height: min(640px, 84vh);
+    background: var(--panel);
+    border-radius: 12px;
+    box-shadow: 0 8px 30px rgba(15, 23, 42, .25);
+    display: flex; flex-direction: column;
+    padding: 16px 18px; gap: 12px;
+  }
+  .ab-title { display: flex; align-items: baseline; gap: 8px; }
+  .ab-title .ab-name { font-size: 16px; font-weight: 700; }
+  .ab-title .ab-ver {
+    font-size: 12px; font-weight: 600; color: var(--accent);
+    background: var(--accent-soft); border-radius: 8px; padding: 1px 7px;
+  }
+  .ab-title .ab-date { font-size: 12px; color: var(--text-2); }
+  .ab-title button { margin-left: auto; align-self: center; }
+  .ab-body { overflow-y: auto; padding-right: 4px; }
+  .ab-rel { margin-bottom: 14px; }
+  .ab-rel:last-child { margin-bottom: 0; }
+  .ab-rel-head {
+    display: flex; align-items: baseline; gap: 8px;
+    font-size: 13px; font-weight: 700; margin-bottom: 2px;
+    padding-bottom: 5px; border-bottom: 1px solid var(--border);
+  }
+  .ab-rel-head .rv { color: var(--accent); }
+  .ab-rel-head .rd { font-size: 11px; font-weight: 400; color: var(--text-2); }
+  .ab-group-label {
+    font-size: 12px; font-weight: 700; margin: 10px 0 4px;
+    display: flex; align-items: center; gap: 5px;
+  }
+  .ab-group-label.feat { color: #16a34a; }
+  .ab-group-label.fix { color: var(--highlight-border); }
+  .ab-list { list-style: none; margin: 0; padding: 0; }
+  .ab-list li {
+    position: relative; padding: 3px 0 3px 16px;
+    font-size: 13px; color: var(--text); line-height: 1.55;
+  }
+  .ab-list li::before {
+    content: ""; position: absolute; left: 3px; top: 11px;
+    width: 5px; height: 5px; border-radius: 50%;
+  }
+  .ab-list.feat li::before { background: #16a34a; }
+  .ab-list.fix li::before { background: var(--highlight-border); }
+
+  .drag-over::after {
+    content: "松开以载入音频文件";
+    position: absolute; inset: 0;
+    background: rgba(37, 99, 235, .08);
+    border: 2px dashed var(--accent);
+    border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; color: var(--accent);
+    z-index: 10;
+  }
+  .stage, .transcript { position: relative; }
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: #c9d1db; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #aab5c2; }
+  ::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🎧 音频字幕播放器</h1>
+  <span class="app-ver" id="app-ver" title="查看变更记录">v1.0</span>
+  <button class="btn primary" id="btn-audio">选择音频</button>
+  <button class="btn" id="btn-sub">选择字幕 (SRT/VTT/LRC/转写txt)</button>
+  <span class="file-name" id="file-name">未加载文件</span>
+</header>
+
+<main>
+  <section class="playlist" id="playlist">
+    <div class="panel-title">
+      <span>我的列表</span>
+      <button class="pl-open-btn" id="btn-open-dir" hidden title="在资源管理器中定位当前音频文件">📂 打开目录</button>
+      <span id="pl-count"></span>
+    </div>
+    <div id="playlist-list"></div>
+    <div class="pl-hint">播放过的音频（含字幕与进度）自动保存在本浏览器，下次打开点列表即续播。数据只在本机。</div>
+  </section>
+
+  <section class="stage" id="stage">
+    <div class="placeholder" id="placeholder">
+      拖入音频文件（或点击「选择音频」）<br>
+      字幕支持 SRT / VTT / LRC / 会议转写（讲话人+时间格式，把 docx 内容另存 txt 即可）<br><br>
+      <kbd>←</kbd><kbd>→</kbd> ±5 秒　<kbd>Shift</kbd> ±10 秒　<kbd>Ctrl</kbd> ±20 秒　<kbd>Alt</kbd> ±30 秒<br>
+      <kbd>空格</kbd> 播放 / 暂停　<kbd>↑</kbd><kbd>↓</kbd> 音量　<kbd>[</kbd><kbd>]</kbd> 倍速
+    </div>
+    <div id="current-sub"></div>
+  </section>
+
+  <section class="transcript">
+    <div class="panel-title">
+      <span id="sub-panel-label">字幕全文（点击任意句子跳转播放）</span>
+      <span class="sub-tools">
+        <span id="edit-tip" hidden>时间轴不可改，只改文本</span>
+        <button class="pl-open-btn" id="btn-edit-sub" hidden title="编辑字幕文本（时间轴锁定不可修改）">✏️ 编辑</button>
+        <button class="pl-open-btn" id="btn-save-sub" hidden title="保存修改回字幕文件">💾 保存</button>
+        <button class="pl-open-btn thin" id="btn-cancel-sub" hidden title="放弃本次修改">取消</button>
+        <button class="pl-open-btn" id="btn-export-sub" hidden title="把当前字幕另存为文件">⬇ 导出</button>
+        <span id="sub-count"></span>
+      </span>
+    </div>
+    <div id="subtitle-list"></div>
+  </section>
+</main>
+
+<div class="controls">
+  <div class="progress-wrap">
+    <span id="time-cur">00:00</span>
+    <div class="progress" id="progress">
+      <div class="track">
+        <div class="buffered" id="buffered"></div>
+        <div class="played" id="played"></div>
+        <div class="knob" id="knob"></div>
+      </div>
+    </div>
+    <span id="time-total">00:00</span>
+  </div>
+  <div class="row2">
+    <button class="icon-btn" id="btn-back30" title="后退 30 秒 (Alt+←)">◀30</button>
+    <button class="icon-btn" id="btn-back20" title="后退 20 秒 (Ctrl+←)">◀20</button>
+    <button class="icon-btn" id="btn-back10" title="后退 10 秒 (Shift+←)">◀10</button>
+    <button class="icon-btn" id="btn-back5" title="后退 5 秒 (←)">◀5</button>
+    <button class="icon-btn big" id="btn-play" title="播放/暂停 (空格)">▶</button>
+    <button class="icon-btn" id="btn-fwd5" title="前进 5 秒 (→)">5▶</button>
+    <button class="icon-btn" id="btn-fwd10" title="前进 10 秒 (Shift+→)">10▶</button>
+    <button class="icon-btn" id="btn-fwd20" title="前进 20 秒 (Ctrl+→)">20▶</button>
+    <button class="icon-btn" id="btn-fwd30" title="前进 30 秒 (Alt+→)">30▶</button>
+
+    <div class="volume-wrap">
+      <button class="icon-btn" id="btn-mute" title="静音 (M)">🔊</button>
+      <input type="range" id="volume" min="0" max="100" value="100">
+    </div>
+
+    <div class="chip-group" id="speed-group">
+      <span class="label">倍速</span>
+      <button class="chip" data-speed="0.5">0.5x</button>
+      <button class="chip" data-speed="0.75">0.75x</button>
+      <button class="chip on" data-speed="1">1x</button>
+      <button class="chip" data-speed="1.5">1.5x</button>
+      <button class="chip" data-speed="2">2x</button>
+    </div>
+
+    <span class="hotkey-help">
+      <kbd>←</kbd><kbd>→</kbd> ±5s　<kbd>Shift</kbd> ±10s　<kbd>Ctrl</kbd> ±20s　<kbd>Alt</kbd> ±30s　<kbd>空格</kbd> 播放/暂停
+    </span>
+  </div>
+</div>
+
+<audio id="audio" preload="metadata"></audio>
+<input type="file" id="file-audio" accept="audio/*,video/*" hidden>
+<input type="file" id="file-sub" accept=".srt,.vtt,.lrc,.txt" hidden>
+
+<!-- 服务模式：磁盘目录浏览弹窗（浏览器安全限制拿不到文件完整路径，由本地服务代为浏览） -->
+<div id="browse-overlay" hidden>
+  <div id="browse-dialog">
+    <div class="bd-title">
+      <span id="browse-mode-label">选择音频文件</span>
+      <button class="btn" id="browse-close">关闭</button>
+    </div>
+    <div class="bd-path-row">
+      <input id="browse-path" type="text" spellcheck="false" placeholder="输入文件夹路径（如 D:\录音）后回车">
+      <button class="btn" id="browse-go">转到</button>
+      <button class="btn" id="browse-up">上级</button>
+    </div>
+    <div class="bd-list" id="browse-list"></div>
+    <div class="bd-hint" id="browse-hint">双击文件夹进入；点击文件选择。选择音频时会自动配对同目录下同名的 .srt/.txt/.vtt/.lrc 字幕。</div>
+  </div>
+</div>
+
+<!-- 关于 / 变更记录 -->
+<div id="about-overlay" hidden>
+  <div id="about-dialog">
+    <div class="ab-title">
+      <span class="ab-name">🎧 音频字幕播放器</span>
+      <span class="ab-ver" id="about-ver">v1.0</span>
+      <span class="ab-date" id="about-date"></span>
+      <button class="btn" id="about-close">关闭</button>
+    </div>
+    <div class="ab-body" id="about-body"></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ---------- 版本与变更记录（播放器自身，与字幕文件无关） ---------- */
+  const APP_VERSION = "v1.0";
+  const APP_CHANGELOG = [
+    {
+      ver: "v1.0", date: "2026-09-12",
+      features: [
+        "音频播放，字幕逐句高亮、点击任意句子跳转",
+        "支持 SRT / VTT / LRC / 会议转写（讲话人+时间）4 种字幕格式，自动识别 UTF-8、GBK 等编码",
+        "进度条自由拖动；±5 / ±10 / ±20 / ±30 秒分级快退快进（方向键 / Shift / Ctrl / Alt），0.5x–2x 倍速",
+        "「我的列表」自动记录播放进度与字幕，下次点开即续播（离线存浏览器，本地服务模式存磁盘路径）",
+        "本地服务模式：目录浏览选音频、自动配对同名字幕、一键打开文件所在目录",
+        "字幕在线编辑：时间轴锁定只改文本，按原编码保真回写、首次保存自动 .bak 备份，支持另存导出",
+        "拖拽载入音频与字幕，全套键盘快捷键"
+      ],
+      fixes: [
+        "修复双击启动后偶发页面脚本未加载、按钮无反应（端口多实例 + 页面读取校验）",
+        "修复点击「编辑」时字幕列表向上跳动的问题",
+        "修复编辑字幕时当前播放行高亮消失的问题",
+        "修复启动时播放列表偶发空白、不自动载入的问题（异步竞态覆盖）"
+      ]
+    }
+  ];
+
+  const audio = document.getElementById("audio");
+  const els = {
+    play: document.getElementById("btn-play"),
+    back5: document.getElementById("btn-back5"),
+    fwd5: document.getElementById("btn-fwd5"),
+    back10: document.getElementById("btn-back10"),
+    fwd10: document.getElementById("btn-fwd10"),
+    back20: document.getElementById("btn-back20"),
+    fwd20: document.getElementById("btn-fwd20"),
+    back30: document.getElementById("btn-back30"),
+    fwd30: document.getElementById("btn-fwd30"),
+    mute: document.getElementById("btn-mute"),
+    volume: document.getElementById("volume"),
+    progress: document.getElementById("progress"),
+    played: document.getElementById("played"),
+    buffered: document.getElementById("buffered"),
+    knob: document.getElementById("knob"),
+    timeCur: document.getElementById("time-cur"),
+    timeTotal: document.getElementById("time-total"),
+    fileName: document.getElementById("file-name"),
+    currentSub: document.getElementById("current-sub"),
+    placeholder: document.getElementById("placeholder"),
+    list: document.getElementById("subtitle-list"),
+    subCount: document.getElementById("sub-count"),
+    stage: document.getElementById("stage"),
+    speedGroup: document.getElementById("speed-group"),
+    plList: document.getElementById("playlist-list"),
+    plCount: document.getElementById("pl-count"),
+    plHint: document.querySelector(".playlist .pl-hint"),
+    openDir: document.getElementById("btn-open-dir"),
+    editSub: document.getElementById("btn-edit-sub"),
+    saveSub: document.getElementById("btn-save-sub"),
+    cancelSub: document.getElementById("btn-cancel-sub"),
+    exportSub: document.getElementById("btn-export-sub"),
+    editTip: document.getElementById("edit-tip"),
+    subLabel: document.getElementById("sub-panel-label"),
+  };
+
+  let subtitles = [];   // [{start, end, text}]
+  let activeIndex = -1;
+  let autoScroll = true;
+
+  let subDoc = null;    // 字幕原始文档结构（保真回写用）
+  let editMode = false; // 是否处于编辑模式
+  let subDirty = false; // 是否有未保存的修改
+
+  /* ---------- 时间工具 ---------- */
+  function fmt(sec) {
+    if (!isFinite(sec) || sec < 0) sec = 0;
+    const s = Math.floor(sec);
+    const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), ss = s % 60;
+    const mm = String(m).padStart(2, "0"), sss = String(ss).padStart(2, "0");
+    return h > 0 ? h + ":" + mm + ":" + sss : mm + ":" + sss;
+  }
+  function parseStamp(str) {
+    // 支持 00:00:05,300 / 00:00:05.300 / 00:05.30 / mm:ss.xx
+    const m = str.trim().match(/^(?:(\d+):)?(\d{1,2}):(\d{1,2})(?:[.,](\d{1,3}))?$/);
+    if (!m) return null;
+    const h = m[1] ? parseInt(m[1], 10) : 0;
+    const min = parseInt(m[2], 10);
+    const s = parseInt(m[3], 10);
+    const ms = m[4] ? parseInt(m[4].padEnd(3, "0"), 10) : 0;
+    return h * 3600 + min * 60 + s + ms / 1000;
+  }
+
+  /* ---------- 字幕解析：SRT / VTT / LRC / 说话人转写 ----------
+     解析的同时构建 subDoc（原始文档结构）。保存时：
+       · 没改过的块原样输出（原始空行、序号、时间写法一概不动）
+       · 只有改动过的块才用新文本重新拼接，时间轴永远沿用原文
+     这样「改文本」不会顺手把整份字幕重排一遍。 */
+  function parseSubtitles(text) {
+    const hasCRLF = /\r\n/.test(text);
+    const clean = text.replace(/^\uFEFF/, "").replace(/\r/g, "");
+    const doc = { kind: "", eol: hasCRLF ? "\r\n" : "\n", blocks: [], tail: 0 };
+    subDoc = doc;
+    if (/-->/.test(clean)) return parseSRT(clean, doc);              // SRT 与 VTT 同结构
+    if (/^\s*\[ti:|\[ar:|\[al:|\[\d+:\d+/i.test(clean)) return parseLRC(clean, doc);
+    if (/(讲话人|说话人|speaker)\s*\d*\s+\d{1,2}:\d{2}/i.test(clean)) return parseTranscript(clean, doc);
+    return [];
+  }
+
+  /* 把原文切成块，保留块间原始空行与文末换行（保真回写的基础） */
+  function splitDoc(text, byBlankLine) {
+    const tailM = /\n+$/.exec(text);
+    const tail = tailM ? tailM[0].length : 0;
+    const body = tail ? text.slice(0, text.length - tail) : text;
+    const blocks = [];
+    const push = raw => blocks.push({
+      raw: raw, sep: "", head: null, headInline: false, text: "", origText: "",
+      prefix: "", idxs: [], edited: false,
+    });
+    if (byBlankLine) {
+      const parts = body.split(/(\n{2,})/);
+      for (let i = 0; i < parts.length; i += 2) {
+        if (parts[i] === "") continue;
+        push(parts[i]);
+        blocks[blocks.length - 1].sep = parts[i + 1] || "";
+      }
+    } else {
+      const lines = body.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        push(lines[i]);
+        blocks[blocks.length - 1].sep = (i < lines.length - 1) ? "\n" : "";
+      }
+    }
+    return { blocks: blocks, tail: tail };
+  }
+
+  /* 把编辑结果拼回文本：未编辑块原样输出，编辑块用原文时间轴 + 新文本 */
+  function rebuildSubtitleText() {
+    if (!subDoc) return lastSubRaw || "";
+    const eol = subDoc.eol;
+    const nl = s => String(s).replace(/\n/g, eol);
+    let out = "";
+    for (const b of subDoc.blocks) {
+      if (!b.edited) { out += nl(b.raw) + nl(b.sep); continue; }
+      let body = b.text;
+      if (b.prefix && body.indexOf(b.prefix) === 0) body = body.slice(b.prefix.length);
+      // headInline=true 表示头部是「同一行前缀」（如 LRC 的 [00:01.00]），不能在其中插换行
+      const head = (b.head && b.head.length)
+        ? (b.headInline ? b.head.join("") : b.head.join(eol) + eol)
+        : "";
+      out += head + nl(body) + nl(b.sep);
+    }
+    if (subDoc.tail) out += new Array(subDoc.tail + 1).join(eol);
+    return out;
+  }
+
+  /* 把某句的编辑结果登记到对应原文块（只有真改了才标记 edited） */
+  function markBlockEdited(i, newText) {
+    if (!subDoc) return;
+    const b = subDoc.blocks.find(x => x.idxs.indexOf(i) >= 0);
+    if (!b) return;
+    b.text = newText;
+    b.edited = (newText !== b.origText);
+  }
+
+  /* 说话人转写格式（飞书妙记/会议记录导出）：
+     讲话人 1  00:00
+     内容文本...
+     （空行分隔，时间只有起点，结束时间用下一句起点回填）
+     兼容 Speaker 1  12:34 / 讲话人 1  01:02:03 */
+  function parseTranscript(text, doc) {
+    const sp = splitDoc(text, true);
+    doc.blocks = sp.blocks;
+    doc.tail = sp.tail;
+    doc.kind = "transcript";
+    const headRe = /^((?:讲话人|说话人|speaker)\s*\d*)\s+(\d{1,2}:\d{2}(?::\d{2})?(?:[.,]\d{1,3})?)\s*$/i;
+    const recs = [];
+    for (const b of sp.blocks) {
+      const lines = b.raw.split("\n").map(l => l.replace(/\s+$/, ""));
+      if (!lines.length) continue;
+      const m = lines[0].match(headRe);
+      if (!m) continue;
+      const start = parseStamp(m[2]);
+      if (start == null) continue;
+      const txt = lines.slice(1).join(" ").replace(/\s{2,}/g, " ").trim();
+      if (!txt) continue;
+      b.head = [lines[0]];
+      b.prefix = m[1].trim() + "：";   // 显示用「讲话人 N：」，写回时自动剥离
+      // 正文若已自带讲话人前缀（用户编辑过），先剥掉再加，避免出现「讲话人 1：讲话人 2：...」
+      const body = txt.replace(/^(?:讲话人|说话人|speaker)\s*\d*\s*[:：]\s*/i, "");
+      b.text = b.prefix + (body || txt);
+      b.origText = b.text;
+      recs.push({ start: start, end: start + 5, text: b.text, block: b });
+    }
+    recs.sort((x, y) => x.start - y.start);
+    const out = [];
+    for (const r of recs) {
+      r.block.idxs = [out.length];
+      out.push({ start: r.start, end: r.end, text: r.text });
+    }
+    for (let i = 0; i < out.length; i++) {
+      if (i + 1 < out.length) out[i].end = Math.max(out[i].start + 0.3, out[i + 1].start - 0.05);
+    }
+    return out;
+  }
+
+  function parseSRT(text, doc) {
+    const sp = splitDoc(text, true);
+    doc.blocks = sp.blocks;
+    doc.tail = sp.tail;
+    doc.kind = /^\s*WEBVTT/i.test(text) ? "vtt" : "srt";
+    const recs = [];
+    for (const b of sp.blocks) {
+      const lines = b.raw.split("\n");
+      let i = 0;
+      while (i < lines.length && lines[i].trim() === "") i++;
+      if (i >= lines.length) continue;
+      // 跳过序号行（纯数字）和 WEBVTT 头
+      if (/^\d+$/.test(lines[i].trim())) i++;
+      else if (/^WEBVTT/i.test(lines[i].trim())) i++;
+      const cue = lines[i];
+      if (!cue || cue.indexOf("-->") < 0) continue;
+      const parts = cue.split("-->");
+      const start = parseStamp(parts[0]);
+      const endM = parts[1].match(/([\d:.,]+)/);
+      const end = endM ? parseStamp(endM[1]) : null;
+      if (start == null || end == null) continue;
+      const bodyLines = lines.slice(i + 1);
+      while (bodyLines.length && bodyLines[bodyLines.length - 1].trim() === "") bodyLines.pop();
+      const txt = bodyLines.join("\n")
+        .replace(/<[^>]+>/g, "")   // 去掉内联标签
+        .replace(/\{\\[^}]*\}/g, "");
+      if (txt.trim() === "") continue;
+      b.head = lines.slice(0, i + 1);   // 序号行 + 时间行，原样保留
+      b.text = txt.trim();
+      b.origText = b.text;
+      recs.push({ start: start, end: end, text: b.text, block: b });
+    }
+    recs.sort((x, y) => x.start - y.start);
+    const out = [];
+    for (const r of recs) {
+      r.block.idxs = [out.length];
+      out.push({ start: r.start, end: r.end, text: r.text });
+    }
+    return out;
+  }
+
+  function parseLRC(text, doc) {
+    const sp = splitDoc(text, false);   // LRC 逐行成块
+    doc.blocks = sp.blocks;
+    doc.tail = sp.tail;
+    doc.kind = "lrc";
+    const tagRe = /\[(\d{1,2}):(\d{1,2}(?:\.\d{1,3})?)\]/g;
+    const cands = [];
+    for (const b of sp.blocks) {
+      tagRe.lastIndex = 0;
+      const tags = [];
+      let m;
+      while ((m = tagRe.exec(b.raw)) !== null) tags.push(m[0]);
+      if (!tags.length) continue;
+      const content = b.raw.replace(tagRe, "").trim();
+      if (!content) continue;
+      b.head = [tags.join("")];
+      b.headInline = true;   // LRC 时间标签与歌词同行
+      b.text = content;
+      b.origText = content;
+      for (const tg of tags) {
+        const tm = tg.match(/\[(\d{1,2}):(\d{1,2}(?:\.\d{1,3})?)\]/);
+        cands.push({ start: parseInt(tm[1], 10) * 60 + parseFloat(tm[2]), text: content, block: b });
+      }
+    }
+    cands.sort((x, y) => x.start - y.start);
+    const out = [];
+    for (const c of cands) {
+      c.block.idxs.push(out.length);
+      out.push({ start: c.start, end: c.start + 3, text: c.text }); // LRC 无结束时间，给 3s 兜底
+    }
+    // 用下一句的开始时间回填结束时间
+    for (let i = 0; i < out.length; i++) {
+      if (i + 1 < out.length) out[i].end = Math.max(out[i].end, out[i + 1].start - 0.05);
+    }
+    return out;
+  }
+
+  /* ---------- 字幕渲染 ---------- */
+  function renderList() {
+    // 重渲染不抢滚动位置：清空前记住，恢复后再贴回去（用户编辑时尤其重要）
+    const keepTop = els.list.scrollTop;
+    const keepLeft = els.list.scrollLeft;
+    // 进入编辑态前后行高会变（contenteditable 默认样式撑高），需要按比例补偿 scrollTop，
+    // 才能让用户感觉"点击编辑后字幕保持在原位"。
+    const prevScrollHeight = els.list.scrollHeight;
+    const wasEditMode = editMode;
+    els.list.innerHTML = "";
+    const frag = document.createDocumentFragment();
+    subtitles.forEach((s, i) => {
+      const div = document.createElement("div");
+      // 重渲染时恢复当前播放行的高亮（编辑模式重建列表后也不能丢）
+      div.className = "sub-item" + (i === activeIndex ? " active" : "");
+      div.dataset.index = i;
+      const t = document.createElement("span");
+      t.className = "t";
+      t.textContent = fmt(s.start);
+      t.title = editMode ? "时间轴不可编辑" : "";
+      const txt = document.createElement("span");
+      txt.className = "txt";
+      txt.textContent = s.text;
+      if (editMode) {
+        txt.setAttribute("contenteditable", "true");
+        txt.spellcheck = false;
+        txt.addEventListener("input", () => onSubTextInput(i, txt));
+        txt.addEventListener("paste", onPastePlain);
+      }
+      div.appendChild(t);
+      div.appendChild(txt);
+      div.addEventListener("click", () => {
+        if (editMode) {
+          // 编辑模式：点击只把光标放进文本，不跳转播放
+          if (document.activeElement !== txt) txt.focus();
+          return;
+        }
+        audio.currentTime = s.start + 0.01;
+        if (audio.paused) audio.play().catch(() => {});
+        setActive(i, true);
+      });
+      frag.appendChild(div);
+    });
+    els.list.appendChild(frag);
+    els.subCount.textContent = subtitles.length ? subtitles.length + " 句" : "";
+    if (!subtitles.length && editMode) { editMode = false; els.list.classList.remove("editing"); }
+    const has = subtitles.length > 0;
+    els.editSub.hidden = !has || editMode;
+    els.saveSub.hidden = !editMode;
+    els.cancelSub.hidden = !editMode;
+    els.editTip.hidden = !editMode;
+    els.exportSub.hidden = !has;
+    if (els.subLabel) {
+      els.subLabel.textContent = editMode
+        ? "字幕编辑中（时间轴锁定，点文本即可改）"
+        : "字幕全文（点击任意句子跳转播放）";
+    }
+    // 还原滚动位置
+    els.list.scrollTop = keepTop;
+    els.list.scrollLeft = keepLeft;
+    // 行高补偿：若前后两次渲染的总高度变了（例如从非编辑态切到编辑态，contenteditable 让行高 +1px），
+    // 按比例放大 scrollTop，让用户看到的"同一行"还在屏幕同一位置。
+    const newScrollHeight = els.list.scrollHeight;
+    if (prevScrollHeight > 0 && newScrollHeight !== prevScrollHeight) {
+      const ratio = newScrollHeight / prevScrollHeight;
+      const maxScroll = els.list.scrollHeight - els.list.clientHeight;
+      const adjusted = Math.min(Math.round(els.list.scrollTop * ratio), Math.max(0, maxScroll));
+      els.list.scrollTop = adjusted;
+    }
+  }
+
+  /* ---------- 字幕文本编辑（时间轴只读） ---------- */
+  function readEditable(node) {
+    const v = node.innerText != null ? node.innerText : node.textContent;
+    return String(v).replace(/\u00a0/g, " ").replace(/\r/g, "").replace(/\n+$/, "");
+  }
+  function onPastePlain(e) {
+    // 粘贴只取纯文本，避免带入外部样式
+    e.preventDefault();
+    const cd = e.clipboardData || window.clipboardData;
+    const txt = cd ? String(cd.getData("text/plain")).replace(/\r\n?/g, "\n") : "";
+    if (!txt) return;
+    let ok = false;
+    try { ok = document.execCommand("insertText", false, txt); } catch (err) { ok = false; }
+    if (!ok) {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount) {
+        const r = sel.getRangeAt(0);
+        r.deleteContents();
+        r.insertNode(document.createTextNode(txt));
+        r.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(r);
+      }
+      e.target.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  }
+  function onSubTextInput(i, node) {
+    const s = subtitles[i];
+    if (!s) return;
+    const v = readEditable(node);
+    if (v === s.text) return;
+    s.text = v;
+    markBlockEdited(i, v);
+    setDirty(hasUnsavedEdits());   // 改回原值就不算修改
+    if (i === activeIndex) els.currentSub.textContent = v;
+  }
+  /* 是否真有块被改动过（用于计算未保存标记，避免「改回原值」仍显示改动） */
+  function hasUnsavedEdits() {
+    return !!(subDoc && subDoc.blocks && subDoc.blocks.some(b => b.edited));
+  }
+  function setDirty(on) {
+    subDirty = on;
+    els.saveSub.classList.toggle("dirty", on);
+    els.saveSub.textContent = on ? "💾 保存 *" : "💾 保存";
+  }
+  function setEditMode(on) {
+    if (on && !subtitles.length) { notify("还没有加载字幕，无法编辑。"); return; }
+    editMode = on;
+    els.list.classList.toggle("editing", on);
+    if (!on) setDirty(false);
+    renderList();   // 重建列表以挂上/摘掉 contenteditable
+    if (on) notify("编辑模式：时间轴锁定，直接改文本。改完点「💾 保存」。");
+  }
+  function collectEdits() {
+    els.list.querySelectorAll(".sub-item").forEach(div => {
+      const i = parseInt(div.dataset.index, 10);
+      const node = div.querySelector(".txt");
+      if (!node || !subtitles[i]) return;
+      const v = readEditable(node);
+      if (v !== subtitles[i].text) {
+        subtitles[i].text = v;
+        markBlockEdited(i, v);
+      }
+    });
+    setDirty(hasUnsavedEdits());
+  }
+  function saveSubtitleEdits() {
+    collectEdits();
+    if (!hasUnsavedEdits()) {   // 没实际改动就不动磁盘文件
+      editMode = false;
+      els.list.classList.remove("editing");
+      setDirty(false);
+      renderList();
+      notify("没有检测到改动，未写入文件。");
+      return;
+    }
+    const text = rebuildSubtitleText();
+    if (!text) { notify("没有可保存的内容。"); return; }
+    const finish = note => {
+      lastSubRaw = text;
+      editMode = false;
+      els.list.classList.remove("editing");
+      setDirty(false);
+      // 已写入的内容即成为新的"原文"基线，否则下次改回原值会被误判成有改动
+      subtitles = parseSubtitles(text);
+      renderList();
+      notify(note);
+    };
+    if (serverOK) {
+      const payload = {
+        text: text,
+        subPath: (currentRecord && currentRecord.subPath) || "",
+        sub: (currentRecord && currentRecord.sub) || "",
+      };
+      if (!payload.subPath && !payload.sub) {
+        notify("当前字幕没有关联磁盘文件，未写入。可用「⬇ 导出」另存，或先用「选择字幕」指定文件。");
+        return;
+      }
+      els.saveSub.disabled = true;
+      srvPost("/api/save-sub", payload).then(j => {
+        els.saveSub.disabled = false;
+        if (j && j.ok) {
+          finish("字幕已保存：" + j.path + "（" + j.encoding +
+                 (j.backup ? "，原文件已备份为 " + j.backup : "") + "）");
+        } else {
+          notify("保存失败：" + ((j && j.error) || "请确认本地服务正在运行（双击「启动播放器.bat」）"));
+        }
+      });
+      return;
+    }
+    if (currentRecord && currentRecord.id) {
+      currentRecord.subText = text;
+      currentRecord.subName = currentSubName;
+      currentRecord.updated = Date.now();
+      dbPut(currentRecord).then(() =>
+        finish("已保存到浏览器本地存储（当前是直开 HTML 模式，没有磁盘文件；可用「⬇ 导出」下载）"));
+      return;
+    }
+    notify("当前没有可写回的目标：请从列表打开一个音频，或点「⬇ 导出」下载字幕文件。");
+  }
+  function cancelEdits() {
+    if (subDirty && !confirm("放弃未保存的字幕修改？")) return;
+    const raw = lastSubRaw;
+    editMode = false;
+    els.list.classList.remove("editing");
+    setDirty(false);
+    if (raw) loadSubtitleText(raw, lastSubRawName);
+    else renderList();
+    notify("已放弃本次修改。");
+  }
+  function exportSubtitle() {
+    collectEdits();
+    const text = rebuildSubtitleText();
+    if (!text) { notify("没有可导出的字幕。"); return; }
+    let name = currentSubName || "";
+    if (!name) {
+      const ext = (subDoc && subDoc.kind === "lrc") ? ".lrc" : ".srt";
+      name = (currentAudioName || "字幕").replace(/\.[^.]+$/, "") + ext;
+    }
+    const blob = new Blob(["\uFEFF" + text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    notify("已导出：" + name);
+  }
+  function notify(msg) {
+    let el = document.getElementById("toast");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "toast";
+      document.body.appendChild(el);
+    }
+    el.textContent = msg;
+    el.classList.add("show");
+    clearTimeout(notify._t);
+    notify._t = setTimeout(() => el.classList.remove("show"), 3600);
+  }
+  /* 切换音频/字幕前拦截未保存的修改 */
+  function guardUnsaved() {
+    if (!subDirty) return true;
+    return confirm("字幕有未保存的修改，继续操作会丢失这些修改。确定继续吗？");
+  }
+  function resetEditState() {
+    editMode = false;
+    subDirty = false;
+    els.list.classList.remove("editing");
+    els.saveSub.classList.remove("dirty");
+    els.saveSub.textContent = "💾 保存";
+    els.saveSub.disabled = false;
+  }
+
+  function setActive(i, scroll) {
+    if (i === activeIndex) return;
+    activeIndex = i;
+    const prev = els.list.querySelector(".sub-item.active");
+    if (prev) prev.classList.remove("active");
+    if (i >= 0) {
+      const cur = els.list.querySelector('.sub-item[data-index="' + i + '"]');
+      if (cur) {
+        cur.classList.add("active");
+        if (scroll && autoScroll && !editMode) {   // 编辑时不抢滚动，避免打断输入
+          cur.scrollIntoView({ block: "center", behavior: "smooth" });
+        }
+      }
+      els.currentSub.textContent = subtitles[i].text;
+      els.placeholder.style.display = "none";
+    }
+  }
+
+  function updateSubtitle() {
+    if (!subtitles.length || !audio.duration) return;
+    const t = audio.currentTime;
+    let i = activeIndex;
+    if (i >= 0 && t >= subtitles[i].start && t <= subtitles[i].end) return;
+    // 顺序扫描优化：正常播放只在附近找，跳播时全量二分
+    if (i >= 0 && t > subtitles[i].start && i + 1 < subtitles.length && t < subtitles[i + 1].end) {
+      i = (t >= subtitles[i + 1].start) ? i + 1 : i;
+    } else {
+      let lo = 0, hi = subtitles.length - 1, r = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const s = subtitles[mid];
+        if (t < s.start) hi = mid - 1;
+        else if (t > s.end) lo = mid + 1;
+        else { r = mid; break; }
+      }
+      i = r;
+    }
+    setActive(i, true);
+  }
+
+  /* ---------- 文件加载 ---------- */
+  let audioFileBaseName = null;
+  let currentUrl = null;
+  let currentRecord = null;   // 当前条目（音频 Blob + 字幕 + 进度），自动保存
+  let currentAudioName = "";
+  let currentSubName = "";
+  let lastSubRaw = "";
+  let lastSubRawName = "";
+
+  function refreshFileName() {
+    let s = currentAudioName ? "🎵 " + currentAudioName : "";
+    if (currentSubName) s += "　|　字幕：" + currentSubName;
+    els.fileName.textContent = s || "未加载文件";
+  }
+
+  /* ---------- 本地服务模式（server.py 在跑：列表存到播放器同目录的 playlist.json，只记录路径） ----------
+     双击直接打开 HTML（file://）时也能用，只要本地服务在运行。
+     服务不在时自动回退到下面的 IndexedDB 浏览器内存储。 */
+  const SERVER_BASE = (location.protocol === "http:" || location.protocol === "https:") ? "" : "http://localhost:8765";
+  let serverOK = false;
+  // 列表渲染令牌：初始引导时 IndexedDB 渲染与 ping 成功后的服务模式渲染会赛跑，
+  // 慢一拍返回的旧模式结果会把服务列表覆盖成空态。每次渲染自增，回调写 DOM 前必须仍是最新。
+  let renderSeq = 0;
+  function srvFetch(path, opts) { return fetch(SERVER_BASE + path, opts); }
+  function srvJSON(path, opts) {
+    return srvFetch(path, opts).then(r => r.json()).catch(() => null);
+  }
+  function srvPost(path, data) {
+    return srvFetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }).then(r => r.json()).catch(() => null);
+  }
+
+  function bootServerFeatures() {
+    els.openDir.hidden = false;
+    els.openDir.title = "在资源管理器中定位当前音频文件";
+    els.openDir.addEventListener("click", () => {
+      const p = currentRecord ? (currentRecord.audioPath || "") : "";
+      srvPost("/api/open", { path: p }).then(j => {
+        if (!j || !j.ok) alert("打开目录失败：请确认本地服务正在运行（双击「启动播放器.bat」）。");
+      });
+    });
+    if (els.plHint) {
+      els.plHint.textContent = "已连接本地服务：列表保存在播放器同目录的 playlist.json，只记录音频/字幕的原始路径，不复制文件。";
+    }
+    // 服务模式下浏览器拿不到本地文件完整路径，拖拽不可用，提示改用目录浏览
+    const ph = els.placeholder;
+    if (ph) {
+      ph.innerHTML = '点击「选择音频」从磁盘目录选择文件（列表只记录路径，不复制文件）<br>' +
+        '字幕支持 SRT / VTT / LRC / 会议转写（讲话人+时间格式，把 docx 内容另存 txt 即可）<br><br>' +
+        '<kbd>←</kbd><kbd>→</kbd> ±5 秒　<kbd>Shift</kbd> ±10 秒　<kbd>Ctrl</kbd> ±20 秒　<kbd>Alt</kbd> ±30 秒<br>' +
+        '<kbd>空格</kbd> 播放 / 暂停　<kbd>↑</kbd><kbd>↓</kbd> 音量　<kbd>[</kbd><kbd>]</kbd> 倍速';
+    }
+    renderPlaylist();
+  }
+  fetch(SERVER_BASE + "/api/ping").then(r => r.json()).then(j => {
+    if (j && j.ok) { serverOK = true; bootServerFeatures(); }
+  }).catch(() => {});
+
+  /* ---------- 本地列表（IndexedDB：存音频 Blob + 字幕文本 + 播放进度） ---------- */
+  const DB_NAME = "audio-sub-player";
+  let dbPromise = null;
+  function openDB() {
+    if (!dbPromise) {
+      dbPromise = new Promise((resolve, reject) => {
+        try {
+          if (!("indexedDB" in window)) throw new Error("no idb");
+          const req = indexedDB.open(DB_NAME, 1);
+          req.onupgradeneeded = () => {
+            const db = req.result;
+            if (!db.objectStoreNames.contains("items")) db.createObjectStore("items", { keyPath: "id" });
+          };
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error || new Error("idb open fail"));
+          req.onblocked = () => reject(new Error("idb blocked"));
+        } catch (e) { reject(e); }
+      });
+      dbPromise.catch(() => showPlError());
+    }
+    return dbPromise;
+  }
+  function showPlError() {
+    els.plList.innerHTML = "";
+    els.plCount.textContent = "";
+    if (els.plHint) els.plHint.textContent = "⚠️ 当前环境不支持本地存储（可能是 file:// 打开的限制），列表功能不可用。不影响手动加载使用。";
+  }
+  function dbPut(rec) {
+    return openDB().then(db => new Promise((resolve, reject) => {
+      const tx = db.transaction("items", "readwrite");
+      tx.objectStore("items").put(rec);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    })).catch(() => {});
+  }
+  function dbGet(id) {
+    return openDB().then(db => new Promise((resolve, reject) => {
+      const req = db.transaction("items", "readonly").objectStore("items").get(id);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    })).catch(() => null);
+  }
+  function dbDelete(id) {
+    return openDB().then(db => new Promise((resolve, reject) => {
+      const tx = db.transaction("items", "readwrite");
+      tx.objectStore("items").delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    })).catch(() => {});
+  }
+  function dbGetAll() {
+    return openDB().then(db => new Promise((resolve, reject) => {
+      const req = db.transaction("items", "readonly").objectStore("items").getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    })).catch(() => []);
+  }
+
+  function savePosition() {
+    if (currentRecord && audio.src) {
+      currentRecord.position = audio.currentTime || 0;
+      currentRecord.updated = Date.now();
+      if (serverOK && (currentRecord.audioPath || currentRecord.audio)) {
+        srvPost("/api/progress", {
+          audioPath: currentRecord.audioPath || "",
+          audio: currentRecord.audio || "",
+          position: currentRecord.position,
+        }).then(() => { if (serverOK) renderPlaylist(); });
+      } else if (!serverOK) {
+        dbPut(currentRecord).then(renderPlaylist);
+      }
+    }
+  }
+
+  function renderPlaylist() {
+    const seq = ++renderSeq;   // 本次渲染的令牌；期间若又触发渲染，本回调作废
+    if (serverOK) return renderServerPlaylist(seq);
+    dbGetAll().then(items => {
+      if (seq !== renderSeq) return;   // 已切到服务模式或有更新的渲染，丢弃这次空结果
+      items.sort((a, b) => b.updated - a.updated);
+      els.plCount.textContent = items.length ? items.length + " 项" : "";
+      els.plList.innerHTML = "";
+      if (!items.length) {
+        const empty = document.createElement("div");
+        empty.className = "pl-item";
+        empty.style.cursor = "default";
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = "暂无记录，加载音频后自动保存";
+        empty.appendChild(meta);
+        els.plList.appendChild(empty);
+        return;
+      }
+      const frag = document.createDocumentFragment();
+      for (const it of items) {
+        const div = document.createElement("div");
+        div.className = "pl-item" + (currentRecord && it.id === currentRecord.id ? " active" : "");
+        const name = document.createElement("div");
+        name.className = "name";
+        name.title = it.audioName;
+        name.textContent = it.audioName;
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = (it.subText ? "📝" : "—") + " 上次 " + fmt(it.position || 0);
+        div.appendChild(name);
+        div.appendChild(meta);
+        const del = document.createElement("span");
+        del.className = "del";
+        del.textContent = "✕";
+        del.title = "从列表删除";
+        del.addEventListener("click", e => {
+          e.stopPropagation();
+          if (!confirm("从列表删除「" + it.audioName + "」？")) return;
+          dbDelete(it.id).then(renderPlaylist);
+        });
+        div.appendChild(del);
+        div.addEventListener("click", () => loadFromRecord(it));
+        frag.appendChild(div);
+      }
+      els.plList.appendChild(frag);
+    });
+  }
+
+  /* ---------- 服务模式列表渲染与加载（只记录文件路径，不复制文件） ---------- */
+  function normPathJs(p) {
+    return String(p).replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+  }
+  function baseName(p) {
+    return String(p).replace(/[\\/]+$/, "").split(/[\\/]/).pop() || String(p);
+  }
+  function joinPath(dir, name) {
+    return dir.replace(/[\\/]+$/, "") + "\\" + name;
+  }
+  function serverSrcOf(it) {
+    if (it.audioPath) return SERVER_BASE + "/media?path=" + encodeURIComponent(it.audioPath);
+    return SERVER_BASE + "/media/" + encodeURIComponent(it.audio);
+  }
+  function subSrcOf(it) {
+    if (it.audioPath && it.subPath) return SERVER_BASE + "/media?path=" + encodeURIComponent(it.subPath);
+    if (!it.audioPath && it.sub) return SERVER_BASE + "/media/" + encodeURIComponent(it.sub);
+    if (it.subPath) return SERVER_BASE + "/media?path=" + encodeURIComponent(it.subPath);
+    return "";
+  }
+  function sameEntry(a, b) {
+    if (!a || !b) return false;
+    if (a.audioPath && b.audioPath) return normPathJs(a.audioPath) === normPathJs(b.audioPath);
+    return !a.audioPath && !b.audioPath && a.audio === b.audio;
+  }
+
+  function renderServerPlaylist(seq) {
+    srvJSON("/api/list").then(d => {
+      if (seq != null && seq !== renderSeq) return;   // 已有更新的渲染，丢弃过期响应
+      if (!d || !d.ok) { showPlError(); return; }
+      const items = d.items || [];
+      els.plCount.textContent = items.length ? items.length + " 项" : "";
+      els.plList.innerHTML = "";
+      if (!items.length) {
+        const empty = document.createElement("div");
+        empty.className = "pl-item";
+        empty.style.cursor = "default";
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = "暂无记录，点击「选择音频」从磁盘添加（只记录路径）";
+        empty.appendChild(meta);
+        els.plList.appendChild(empty);
+        return;
+      }
+      const frag = document.createDocumentFragment();
+      for (const it of items) {
+        const div = document.createElement("div");
+        div.className = "pl-item" + (sameEntry(it, currentRecord) ? " active" : "");
+        const name = document.createElement("div");
+        name.className = "name";
+        name.title = it.audioPath || it.audio || "";
+        name.textContent = baseName(it.audioPath || it.audio || "");
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = ((it.sub || it.subPath) ? "📝" : "—") + " 上次 " + fmt(it.position || 0);
+        div.appendChild(name);
+        div.appendChild(meta);
+        const del = document.createElement("span");
+        del.className = "del";
+        del.textContent = "✕";
+        del.title = "从列表删除";
+        del.addEventListener("click", e => {
+          e.stopPropagation();
+          const nm = baseName(it.audioPath || it.audio || "");
+          const tip = it.audioPath
+            ? "从列表删除「" + nm + "」？（仅移除记录，不会删除磁盘上的文件）"
+            : "从列表删除「" + nm + "」？媒体库中对应的复制文件也会一并删除。";
+          if (!confirm(tip)) return;
+          srvPost("/api/delete", { audioPath: it.audioPath || "", audio: it.audio || "" })
+            .then(() => renderPlaylist());
+        });
+        div.appendChild(del);
+        div.addEventListener("click", () => playServerEntry(it));
+        frag.appendChild(div);
+      }
+      els.plList.appendChild(frag);
+    });
+  }
+
+  function playServerEntry(it) {
+    if (!it || (!it.audioPath && !it.audio)) return;
+    if (!guardUnsaved()) return;
+    resetEditState();
+    currentRecord = Object.assign({}, it);
+    currentAudioName = baseName(it.audioPath || it.audio);
+    audioFileBaseName = currentAudioName.replace(/\.[^.]+$/, "");
+    if (currentUrl) { URL.revokeObjectURL(currentUrl); currentUrl = null; }
+    audio.src = serverSrcOf(it);
+    const subUrl = subSrcOf(it);
+    const subLabel = it.subPath ? baseName(it.subPath) : (it.sub || "");
+    if (subUrl) {
+      srvFetch(subUrl).then(r => r.ok ? r.arrayBuffer() : null).then(buf => {
+        if (buf) {
+          const text = decodeBuffer(buf);
+          if (text) { loadSubtitleText(text, subLabel); return; }
+        }
+        subtitles = []; currentSubName = ""; renderList();
+      });
+    } else {
+      subtitles = []; currentSubName = ""; renderList();
+    }
+    const seek = () => {
+      if (it.position > 0.5 && it.position < (audio.duration || Infinity) - 1) {
+        audio.currentTime = it.position;
+      }
+      updateProgressUI();
+      audio.removeEventListener("loadedmetadata", seek);
+    };
+    audio.addEventListener("loadedmetadata", seek);
+    els.currentSub.textContent = "";
+    activeIndex = -1;
+    refreshFileName();
+    audio.play().catch(() => {});
+    renderPlaylist();
+  }
+
+  /* 从磁盘新选一个音频：带上可选的同名字幕路径，并登记到列表 */
+  function loadServerAudio(audioPath, subPath) {
+    srvJSON("/api/list").then(d => {
+      const items = (d && d.items) || [];
+      const old = items.find(x => x.audioPath && normPathJs(x.audioPath) === normPathJs(audioPath));
+      const entry = {
+        audioPath: audioPath,
+        subPath: subPath || (old ? (old.subPath || "") : ""),
+        position: old ? (old.position || 0) : 0,
+        updated: Date.now(),
+      };
+      srvPost("/api/entry", entry).then(() => playServerEntry(entry));
+    });
+  }
+
+  /* ---------- 目录浏览弹窗（服务模式选择文件） ---------- */
+  const browse = {
+    mode: "audio",        // "audio" | "sub"
+    dir: "",
+    last: null,
+    overlay: document.getElementById("browse-overlay"),
+    list: document.getElementById("browse-list"),
+    pathInput: document.getElementById("browse-path"),
+    modeLabel: document.getElementById("browse-mode-label"),
+  };
+  function openBrowse(mode) {
+    browse.mode = mode;
+    browse.modeLabel.textContent = mode === "audio" ? "选择音频文件" : "选择字幕文件";
+    browse.overlay.hidden = false;
+    let start = "";
+    try { start = localStorage.getItem("browseDir") || ""; } catch (e) {}
+    browseGo(start);
+  }
+  function closeBrowse() { browse.overlay.hidden = true; }
+
+  /* ---------- 关于 / 变更记录弹窗 ---------- */
+  const about = {
+    overlay: document.getElementById("about-overlay"),
+    body: document.getElementById("about-body"),
+    rendered: false
+  };
+  function renderAbout() {
+    document.getElementById("about-ver").textContent = APP_VERSION;
+    document.getElementById("about-date").textContent =
+      (APP_CHANGELOG[0] && APP_CHANGELOG[0].date) || "";
+    const html = APP_CHANGELOG.map(rel => {
+      const li = arr => arr.map(t => "<li>" + t + "</li>").join("");
+      return (
+        "<div class=\"ab-rel\">" +
+          "<div class=\"ab-rel-head\"><span class=\"rv\">" + rel.ver + "</span>" +
+            (rel.date ? "<span class=\"rd\">" + rel.date + "</span>" : "") + "</div>" +
+          "<div class=\"ab-group-label feat\">✚ 新功能</div>" +
+          "<ul class=\"ab-list feat\">" + li(rel.features) + "</ul>" +
+          "<div class=\"ab-group-label fix\">🛠 问题修复</div>" +
+          "<ul class=\"ab-list fix\">" + li(rel.fixes) + "</ul>" +
+        "</div>"
+      );
+    }).join("");
+    about.body.innerHTML = html;
+    about.rendered = true;
+  }
+  function openAbout() {
+    if (!about.rendered) renderAbout();
+    about.overlay.hidden = false;
+  }
+  function closeAbout() { about.overlay.hidden = true; }
+  document.getElementById("app-ver").addEventListener("click", openAbout);
+  document.getElementById("about-close").addEventListener("click", closeAbout);
+  about.overlay.addEventListener("click", e => { if (e.target === about.overlay) closeAbout(); });
+  function browseGo(dir) {
+    srvJSON("/api/browse?dir=" + encodeURIComponent(dir || "")).then(d => {
+      if (!d || !d.ok) { alert("无法读取该目录：" + (d && d.error || "")); return; }
+      browse.dir = d.dir;
+      browse.last = d;
+      try { localStorage.setItem("browseDir", d.dir); } catch (e) {}
+      renderBrowse(d);
+    });
+  }
+  function browseRow(label, onClick, dim) {
+    const div = document.createElement("div");
+    div.className = "bd-item" + (dim ? " dim" : "");
+    div.textContent = label;
+    if (!dim && onClick) div.addEventListener("click", onClick);
+    return div;
+  }
+  function renderBrowse(d) {
+    browse.pathInput.value = d.dir;
+    browse.list.innerHTML = "";
+    const frag = document.createDocumentFragment();
+    for (const drv of (d.drives || [])) frag.appendChild(browseRow("💽 " + drv, () => browseGo(drv)));
+    if (d.parent) frag.appendChild(browseRow("📁 ..（上级目录）", () => browseGo(d.parent)));
+    for (const name of d.dirs) frag.appendChild(browseRow("📁 " + name, () => browseGo(joinPath(d.dir, name))));
+    const pickAudio = browse.mode === "audio";
+    const pickable = pickAudio ? d.audio : d.subs;
+    const others = pickAudio ? d.subs : d.audio;
+    for (const name of pickable) {
+      frag.appendChild(browseRow((pickAudio ? "🎵 " : "📝 ") + name, () => {
+        if (pickAudio) pickBrowseAudio(d.dir, name, others);
+        else pickBrowseSub(d.dir, name);
+      }));
+    }
+    for (const name of others) frag.appendChild(browseRow((pickAudio ? "📝 " : "🎵 ") + name, null, true));
+    if (!frag.childNodes.length) {
+      frag.appendChild(browseRow("（此目录没有可选择的文件）", null, true));
+    }
+    browse.list.appendChild(frag);
+  }
+  function pickBrowseAudio(dir, name, subNames) {
+    const audioPath = joinPath(dir, name);
+    const base = name.replace(/\.[^.]+$/, "");
+    const subName = (subNames || []).find(n => n.replace(/\.[^.]+$/, "") === base) || "";
+    const subPath = subName ? joinPath(dir, subName) : "";
+    closeBrowse();
+    loadServerAudio(audioPath, subPath);
+  }
+  function pickBrowseSub(dir, name) {
+    if (!currentRecord || (!currentRecord.audioPath && !currentRecord.audio)) {
+      alert("请先选择音频，再为它配字幕。");
+      return;
+    }
+    const subPath = joinPath(dir, name);
+    currentRecord.subPath = subPath;
+    currentRecord.updated = Date.now();
+    srvFetch(SERVER_BASE + "/media?path=" + encodeURIComponent(subPath))
+      .then(r => r.ok ? r.arrayBuffer() : null)
+      .then(buf => {
+        closeBrowse();
+        if (buf) {
+          const text = decodeBuffer(buf);
+          if (text) { loadSubtitleText(text, name); return; }
+        }
+        alert("字幕读取失败，请确认文件存在且可读。");
+      });
+  }
+  document.getElementById("browse-close").addEventListener("click", closeBrowse);
+  browse.overlay.addEventListener("click", e => { if (e.target === browse.overlay) closeBrowse(); });
+  document.getElementById("browse-go").addEventListener("click", () => browseGo(browse.pathInput.value.trim()));
+  browse.pathInput.addEventListener("keydown", e => {
+    if (e.key === "Enter") browseGo(browse.pathInput.value.trim());
+  });
+  document.getElementById("browse-up").addEventListener("click", () => {
+    browseGo(browse.last && browse.last.parent ? browse.last.parent : browse.dir);
+  });
+
+  function loadFromRecord(rec) {
+    if (!rec || !rec.audioBlob) return;
+    if (!guardUnsaved()) return;
+    resetEditState();
+    if (currentUrl) URL.revokeObjectURL(currentUrl);
+    currentUrl = URL.createObjectURL(rec.audioBlob);
+    currentRecord = Object.assign({}, rec);
+    currentAudioName = rec.audioName;
+    audio.src = currentUrl;
+    audio.play().catch(() => {});
+    if (rec.subText) {
+      loadSubtitleText(rec.subText, rec.subName);
+    } else {
+      subtitles = [];
+      currentSubName = "";
+      renderList();
+    }
+    // 恢复上次进度
+    const seek = () => {
+      if (rec.position > 0.5 && rec.position < (audio.duration || Infinity) - 1) {
+        audio.currentTime = rec.position;
+      }
+      updateProgressUI();
+      audio.removeEventListener("loadedmetadata", seek);
+    };
+    audio.addEventListener("loadedmetadata", seek);
+    els.currentSub.textContent = "";
+    activeIndex = -1;
+    refreshFileName();
+    renderPlaylist();
+  }
+
+  function loadAudioFile(file) {
+    /* 服务模式：浏览器拿不到拖入/选择文件的完整路径，引导用目录浏览选择 */
+    if (serverOK) {
+      alert("已连接本地服务：浏览器无法获取文件的完整路径，请通过磁盘目录浏览选择音频（列表只记录路径，不复制文件）。");
+      openBrowse("audio");
+      return;
+    }
+    if (currentUrl) URL.revokeObjectURL(currentUrl);
+    currentUrl = URL.createObjectURL(file);
+    audio.src = currentUrl;
+    const id = file.name + "|" + file.size;
+    audioFileBaseName = file.name.replace(/\.[^.]+$/, "");
+    currentAudioName = file.name;
+    els.currentSub.textContent = "";
+    activeIndex = -1;
+    refreshFileName();
+    audio.play().catch(() => {});
+
+    // 已在内存里的字幕（先拖字幕后选音频的场景）与音频配对保存
+    const pairSubText = subtitles.length ? lastSubRaw : null;
+    dbGet(id).then(old => {
+      currentRecord = {
+        id: id,
+        audioName: file.name,
+        audioBlob: file,
+        subName: pairSubText != null ? lastSubRawName : (old ? old.subName : ""),
+        subText: pairSubText != null ? pairSubText : (old ? old.subText : ""),
+        position: old ? old.position : 0,
+        updated: Date.now(),
+      };
+      dbPut(currentRecord).then(renderPlaylist);
+      // 同一音频再次加载且当前没有字幕时，自动带出已保存字幕
+      if (pairSubText == null && old && old.subText && !subtitles.length) {
+        loadSubtitleText(old.subText, old.subName);
+      }
+    });
+  }
+
+  function loadSubtitleText(text, sourceName) {
+    subtitles = parseSubtitles(text);
+    activeIndex = -1;
+    lastSubRaw = text;
+    lastSubRawName = sourceName || "";
+    els.list.querySelectorAll(".sub-item.active").forEach(n => n.classList.remove("active"));
+    renderList();
+    if (subtitles.length) {
+      currentSubName = lastSubRawName;
+      if (currentRecord) {
+        currentRecord.subText = text;
+        currentRecord.subName = currentSubName;
+        currentRecord.updated = Date.now();
+        if (serverOK && (currentRecord.audioPath || currentRecord.audio)) {
+          // 服务模式：把字幕路径登记到列表（不复制文件）
+          const payload = { position: currentRecord.position || 0 };
+          if (currentRecord.audioPath) {
+            payload.audioPath = currentRecord.audioPath;
+            payload.subPath = currentRecord.subPath || "";
+          } else {
+            payload.audio = currentRecord.audio;
+            payload.subPath = currentRecord.subPath || "";
+            payload.sub = currentRecord.sub || "";
+          }
+          srvPost("/api/entry", payload).then(() => { if (serverOK) renderPlaylist(); });
+        } else if (!serverOK) {
+          dbPut(currentRecord).then(renderPlaylist);
+        }
+      }
+    } else {
+      alert("字幕解析失败：没有识别到有效的时间轴。请确认文件是 SRT / VTT / LRC 或「讲话人+时间」转写格式。");
+    }
+    refreshFileName();
+  }
+
+  document.getElementById("btn-audio").addEventListener("click", () => {
+    if (!guardUnsaved()) return;
+    if (serverOK) { openBrowse("audio"); return; }
+    document.getElementById("file-audio").click();
+  });
+
+  /* 字幕编辑按钮 */
+  els.editSub.addEventListener("click", () => setEditMode(true));
+  els.saveSub.addEventListener("click", saveSubtitleEdits);
+  els.cancelSub.addEventListener("click", cancelEdits);
+  els.exportSub.addEventListener("click", exportSubtitle);
+  /* ---------- 文件读取：自动识别编码（UTF-8 / UTF-16 / GBK） ---------- */
+  function decodeBuffer(buf) {
+    const u8 = new Uint8Array(buf);
+    if (u8.length >= 2 && u8[0] === 0xFF && u8[1] === 0xFE) return new TextDecoder("utf-16le").decode(u8);
+    if (u8.length >= 2 && u8[0] === 0xFE && u8[1] === 0xFF) return new TextDecoder("utf-16be").decode(u8);
+    if (u8.length >= 3 && u8[0] === 0xEF && u8[1] === 0xBB && u8[2] === 0xBF) return new TextDecoder("utf-8").decode(u8);
+    try { return new TextDecoder("utf-8", { fatal: true }).decode(u8); }
+    catch (e) {
+      // 非 UTF-8：中文 Word 另存的 txt 多为 GBK
+      try { return new TextDecoder("gb18030").decode(u8); }
+      catch (e2) { return new TextDecoder("utf-8").decode(u8); }
+    }
+  }
+  function readFileSmart(file) {
+    return new Promise(resolve => {
+      const rd = new FileReader();
+      rd.onload = () => resolve(decodeBuffer(rd.result));
+      rd.onerror = () => resolve("");
+      rd.readAsArrayBuffer(file);
+    });
+  }
+
+  document.getElementById("file-audio").addEventListener("change", e => {
+    const f = e.target.files[0];
+    if (f) loadAudioFile(f);
+    e.target.value = "";
+  });
+  document.getElementById("btn-sub").addEventListener("click", () => {
+    if (serverOK) {
+      if (!currentRecord || (!currentRecord.audioPath && !currentRecord.audio)) {
+        alert("请先选择音频，再为它配字幕。");
+        return;
+      }
+      openBrowse("sub");
+      return;
+    }
+    document.getElementById("file-sub").click();
+  });
+  document.getElementById("file-sub").addEventListener("change", e => {
+    const f = e.target.files[0];
+    if (f) readFileSmart(f).then(text => loadSubtitleText(text, f.name));
+    e.target.value = "";
+  });
+
+  /* ---------- 拖拽支持：可同时拖入 音频+字幕 ---------- */
+  let dragCounter = 0;
+  for (const zone of [els.stage, document.querySelector(".transcript")]) {
+    zone.addEventListener("dragenter", e => { e.preventDefault(); dragCounter++; zone.classList.add("drag-over"); });
+    zone.addEventListener("dragleave", () => { dragCounter--; if (dragCounter <= 0) zone.classList.remove("drag-over"); });
+    zone.addEventListener("dragover", e => e.preventDefault());
+    zone.addEventListener("drop", e => {
+      e.preventDefault();
+      dragCounter = 0;
+      zone.classList.remove("drag-over");
+      handleDrop(e.dataTransfer.files);
+    });
+  }
+  function handleDrop(files) {
+    if (serverOK) {
+      alert("已连接本地服务：浏览器无法获取拖入文件的完整路径，请用目录浏览选择（列表只记录路径，不复制文件）。");
+      openBrowse("audio");
+      return;
+    }
+    let audioFile = null, subFile = null, subText = null;
+    for (const f of files) {
+      if (/\.(srt|vtt|lrc|txt)$/i.test(f.name)) subFile = f;
+      else if (/^audio\/|^video\/|\.(mp3|wav|flac|m4a|aac|ogg|opus|wma|mp4|mkv|webm)$/i.test(f.type + " " + f.name)) audioFile = f;
+    }
+    const done = () => {
+      if (audioFile) loadAudioFile(audioFile);
+      if (subFile) readFileSmart(subFile).then(text => loadSubtitleText(text, subFile.name));
+    };
+    done();
+  }
+
+  /* ---------- 进度条拖动（pointer events，随意拖） ---------- */
+  function seekFromEvent(e) {
+    const rect = els.progress.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    if (audio.duration) {
+      audio.currentTime = ratio * audio.duration;
+      updateProgressUI();
+      updateSubtitle();
+    }
+  }
+  let dragging = false;
+  els.progress.addEventListener("pointerdown", e => {
+    dragging = true;
+    els.progress.classList.add("dragging");
+    els.progress.setPointerCapture(e.pointerId);
+    seekFromEvent(e);
+  });
+  els.progress.addEventListener("pointermove", e => { if (dragging) seekFromEvent(e); });
+  els.progress.addEventListener("pointerup", e => {
+    dragging = false;
+    els.progress.classList.remove("dragging");
+    try { els.progress.releasePointerCapture(e.pointerId); } catch (_) {}
+  });
+
+  function updateProgressUI() {
+    const d = audio.duration || 0;
+    const cur = audio.currentTime || 0;
+    const pct = d ? (cur / d) * 100 : 0;
+    els.played.style.width = pct + "%";
+    els.knob.style.left = pct + "%";
+    if (audio.buffered.length && d) {
+      els.buffered.style.width = (audio.buffered.end(audio.buffered.length - 1) / d) * 100 + "%";
+    }
+    els.timeCur.textContent = fmt(cur);
+    els.timeTotal.textContent = fmt(d);
+  }
+
+  /* ---------- 播放控制 ---------- */
+  function togglePlay() {
+    if (!audio.src) { document.getElementById("btn-audio").click(); return; }
+    if (audio.paused) audio.play().catch(() => {});
+    else audio.pause();
+  }
+  function skip(sec) {
+    if (!audio.src) return;
+    audio.currentTime = Math.min(audio.duration || Infinity, Math.max(0, audio.currentTime + sec));
+    updateProgressUI();
+    updateSubtitle();
+  }
+
+  els.play.addEventListener("click", togglePlay);
+  els.back5.addEventListener("click", () => skip(-5));
+  els.fwd5.addEventListener("click", () => skip(5));
+  els.back10.addEventListener("click", () => skip(-10));
+  els.fwd10.addEventListener("click", () => skip(10));
+  els.back20.addEventListener("click", () => skip(-20));
+  els.fwd20.addEventListener("click", () => skip(20));
+  els.back30.addEventListener("click", () => skip(-30));
+  els.fwd30.addEventListener("click", () => skip(30));
+
+  els.mute.addEventListener("click", () => { audio.muted = !audio.muted; syncMuteUI(); });
+  function syncMuteUI() {
+    els.mute.textContent = audio.muted || audio.volume === 0 ? "🔇" : "🔊";
+  }
+  els.volume.addEventListener("input", () => {
+    audio.volume = els.volume.value / 100;
+    audio.muted = false;
+    syncMuteUI();
+  });
+
+  /* 倍速 */
+  els.speedGroup.addEventListener("click", e => {
+    const chip = e.target.closest(".chip");
+    if (!chip) return;
+    setSpeed(parseFloat(chip.dataset.speed));
+  });
+  function setSpeed(r) {
+    audio.playbackRate = r;
+    els.speedGroup.querySelectorAll(".chip").forEach(c =>
+      c.classList.toggle("on", parseFloat(c.dataset.speed) === r));
+  }
+
+  /* ---------- audio 事件 ---------- */
+  audio.addEventListener("timeupdate", () => { updateProgressUI(); updateSubtitle(); });
+  audio.addEventListener("loadedmetadata", updateProgressUI);
+  audio.addEventListener("progress", updateProgressUI);
+  audio.addEventListener("play", () => { els.play.textContent = "⏸"; });
+  audio.addEventListener("pause", () => { els.play.textContent = "▶"; });
+  audio.addEventListener("ended", () => { els.play.textContent = "▶"; });
+
+  /* ---------- 播放进度自动保存（每 5 秒 + 暂停/离页时） ---------- */
+  let lastPosSave = 0;
+  audio.addEventListener("timeupdate", () => {
+    const now = Date.now();
+    if (now - lastPosSave > 5000) { lastPosSave = now; savePosition(); }
+  });
+  audio.addEventListener("pause", savePosition);
+  audio.addEventListener("ended", savePosition);
+  window.addEventListener("beforeunload", e => {
+    savePosition();
+    if (subDirty) { e.preventDefault(); e.returnValue = ""; }  // 有未保存的字幕修改时提醒
+  });
+  document.addEventListener("visibilitychange", () => { if (document.hidden) savePosition(); });
+
+  /* ---------- 全局快捷键 ---------- */
+  document.addEventListener("keydown", e => {
+    // 变更记录弹窗打开时：只响应 Esc 关闭
+    if (!about.overlay.hidden) {
+      if (e.key === "Escape") { e.preventDefault(); closeAbout(); }
+      return;
+    }
+    // 目录浏览弹窗打开时：Esc 关闭，其余按键交给输入框
+    if (!browse.overlay.hidden) {
+      if (e.key === "Escape") { e.preventDefault(); closeBrowse(); }
+      return;
+    }
+    // 正在编辑字幕文本：不拦截按键（否则空格没法打、方向键变跳转）
+    if (e.target.isContentEditable) {
+      if (e.key === "Escape") e.target.blur();
+      if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+        e.preventDefault();
+        if (editMode) saveSubtitleEdits();
+      }
+      return;
+    }
+    // 输入控件内不拦截
+    const tag = (e.target.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "select" || tag === "textarea") return;
+    switch (e.key) {
+      case " ": e.preventDefault(); togglePlay(); break;
+      case "ArrowLeft":
+      case "ArrowRight": {
+        e.preventDefault();
+        const dir = e.key === "ArrowRight" ? 1 : -1;
+        const step = e.altKey ? 30 : e.ctrlKey ? 20 : e.shiftKey ? 10 : 5;
+        skip(dir * step);
+        break;
+      }
+      case "ArrowUp": e.preventDefault();
+        audio.muted = false; audio.volume = Math.min(1, audio.volume + 0.05);
+        els.volume.value = audio.volume * 100; syncMuteUI(); break;
+      case "ArrowDown": e.preventDefault();
+        audio.volume = Math.max(0, audio.volume - 0.05);
+        els.volume.value = audio.volume * 100; syncMuteUI(); break;
+      case "m": case "M": audio.muted = !audio.muted; syncMuteUI(); break;
+      case "[": setSpeed(Math.max(0.25, audio.playbackRate - 0.25)); break;
+      case "]": setSpeed(Math.min(3, audio.playbackRate + 0.25)); break;
+    }
+  });
+
+  /* ---------- 字幕列表滚动时暂停自动跟随 ---------- */
+  els.list.addEventListener("wheel", () => { autoScroll = false; clearTimeout(wheelTimer); }, { passive: true });
+  let wheelTimer;
+  function scheduleResume() {}
+  els.list.addEventListener("scroll", () => {
+    autoScroll = false;
+    clearTimeout(wheelTimer);
+    wheelTimer = setTimeout(() => { autoScroll = true; }, 4000);
+  }, { passive: true });
+
+  updateProgressUI();
+  renderPlaylist();
+})();
+</script>
+</body>
+</html>

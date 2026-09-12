@@ -1,0 +1,17 @@
+# 本地运行数据（含本机路径、播放进度，勿提交）
+playlist.json
+媒体库/
+
+# Python
+__pycache__/
+*.pyc
+
+# 系统/编辑器
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# 临时/测试
+*.log
+.test/
