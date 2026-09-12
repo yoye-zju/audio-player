@@ -545,7 +545,7 @@
 
 <header>
   <h1>🎧 音频字幕播放器</h1>
-  <span class="app-ver" id="app-ver" title="查看变更记录">v1.1</span>
+  <span class="app-ver" id="app-ver" title="查看变更记录">v1.2</span>
   <button class="btn primary" id="btn-audio">选择音频</button>
   <button class="btn" id="btn-sub">选择字幕 (SRT/VTT/LRC/转写txt)</button>
   <span class="file-name" id="file-name">未加载文件</span>
@@ -691,8 +691,15 @@
   "use strict";
 
   /* ---------- 版本与变更记录（播放器自身，与字幕文件无关） ---------- */
-  const APP_VERSION = "v1.1";
+  const APP_VERSION = "v1.2";
   const APP_CHANGELOG = [
+    {
+      ver: "v1.2", date: "2026-09-12",
+      features: [
+        "导出字幕时书签一并导出：自动生成「文件名-书签.txt」（每行 时间 + 书签句文本），换设备也能对照回放"
+      ],
+      fixes: []
+    },
     {
       ver: "v1.1", date: "2026-09-12",
       features: [
@@ -1183,15 +1190,7 @@
     else renderList();
     notify("已放弃本次修改。");
   }
-  function exportSubtitle() {
-    collectEdits();
-    const text = rebuildSubtitleText();
-    if (!text) { notify("没有可导出的字幕。"); return; }
-    let name = currentSubName || "";
-    if (!name) {
-      const ext = (subDoc && subDoc.kind === "lrc") ? ".lrc" : ".srt";
-      name = (currentAudioName || "字幕").replace(/\.[^.]+$/, "") + ext;
-    }
+  function downloadText(name, text) {
     const blob = new Blob(["\uFEFF" + text], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1201,7 +1200,28 @@
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+  function exportSubtitle() {
+    collectEdits();
+    const text = rebuildSubtitleText();
+    if (!text) { notify("没有可导出的字幕。"); return; }
+    let name = currentSubName || "";
+    if (!name) {
+      const ext = (subDoc && subDoc.kind === "lrc") ? ".lrc" : ".srt";
+      name = (currentAudioName || "字幕").replace(/\.[^.]+$/, "") + ext;
+    }
+    downloadText(name, text);
     notify("已导出：" + name);
+    // 书签随导出：独立 txt（每行 mm:ss 书签句文本），换设备也能对照回放
+    const arr = currentRecord && Array.isArray(currentRecord.bookmarks) ? currentRecord.bookmarks : [];
+    if (arr.length) {
+      const bmName = name.replace(/\.[^.]+$/, "") + "-书签.txt";
+      const bmText = "# 音频字幕播放器书签导出\n# 音频：" + (currentAudioName || "(未命名)") +
+        "\n# 共 " + arr.length + " 个书签，时间可直接在播放器里定位\n" +
+        arr.map(b => fmt(b.t) + "  " + (b.text || "(无字幕)")).join("\n") + "\n";
+      setTimeout(() => downloadText(bmName, bmText), 400);   // 稍延迟，避开同一事件循环里双下载被浏览器拦截
+      notify("已导出：" + name + "，及书签 " + arr.length + " 条（" + bmName + "）");
+    }
   }
   function notify(msg) {
     let el = document.getElementById("toast");
