@@ -88,8 +88,11 @@ def clean_bookmarks(data):
     """从请求里取书签数组，过滤非法项；缺字段返回 None（表示本次请求不带书签，不覆盖）"""
     if "bookmarks" not in data or data["bookmarks"] is None:
         return None
+    raw = data["bookmarks"]
+    if not isinstance(raw, list):
+        return []
     out = []
-    for b in data["bookmarks"] or []:
+    for b in raw:
         if isinstance(b, dict) and isinstance(b.get("t"), (int, float)) and b["t"] >= 0:
             out.append({"t": round(float(b["t"]), 3), "text": str(b.get("text") or "")[:200]})
     out.sort(key=lambda x: x["t"])
@@ -407,6 +410,30 @@ class Handler(BaseHTTPRequestHandler):
                 it["bookmarks"] = bms
             save_playlist(items)
             return self._json({"ok": True})
+
+        if path == "/api/bookmarks":
+            # 只覆盖书签字段，不动播放进度（供书签导入使用）
+            data = self._read_json()
+            if not data:
+                return self._json({"ok": False, "error": "bad request"}, 400)
+            apath = (data.get("audioPath") or "").strip()
+            if not apath and not data.get("audio"):
+                return self._json({"ok": False, "error": "no audio"}, 400)
+            if "bookmarks" not in data or data["bookmarks"] is None:
+                return self._json({"ok": False, "error": "no bookmarks"}, 400)
+            bms = clean_bookmarks(data)
+            items = load_playlist()
+            for it in items:
+                if apath:
+                    if it.get("audioPath") and _norm(it["audioPath"]) == _norm(apath):
+                        break
+                elif it.get("audio") == data.get("audio"):
+                    break
+            else:
+                return self._json({"ok": False, "error": "not found"}, 404)
+            it["bookmarks"] = bms
+            save_playlist(items)
+            return self._json({"ok": True, "added": len(bms)})
 
         if path == "/api/delete":
             data = self._read_json()

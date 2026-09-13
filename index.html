@@ -545,7 +545,7 @@
 
 <header>
   <h1>🎧 音频字幕播放器</h1>
-  <span class="app-ver" id="app-ver" title="查看变更记录">v1.2</span>
+  <span class="app-ver" id="app-ver" title="查看变更记录">v1.3</span>
   <button class="btn primary" id="btn-audio">选择音频</button>
   <button class="btn" id="btn-sub">选择字幕 (SRT/VTT/LRC/转写txt)</button>
   <span class="file-name" id="file-name">未加载文件</span>
@@ -668,8 +668,12 @@
     <div class="bd-list" id="bm-list"></div>
     <div class="bm-footer">
       <span class="bd-hint">点击书签跳到该时刻；B 键随时在当前播放位置打书签。书签随列表记录自动保存。</span>
-      <button class="btn" id="bm-clear">清空全部</button>
+      <span style="display:flex; gap:8px;">
+        <button class="btn" id="bm-import">📥 导入</button>
+        <button class="btn" id="bm-clear">清空全部</button>
+      </span>
     </div>
+    <input type="file" id="bm-import-input" accept=".txt,text/plain" multiple hidden>
   </div>
 </div>
 
@@ -691,8 +695,16 @@
   "use strict";
 
   /* ---------- 版本与变更记录（播放器自身，与字幕文件无关） ---------- */
-  const APP_VERSION = "v1.2";
+  const APP_VERSION = "v1.3";
   const APP_CHANGELOG = [
+    {
+      ver: "v1.3", date: "2026-09-13",
+      features: [
+        "书签导入：书签面板新增「📥 导入」，可一次多选多个「-书签.txt」批量导回，按文件头音频名自动对号入座到列表记录",
+        "导入时与现有书签合并并按 ±0.5 秒去重，匹配不上的音频会明确提示跳过，不静默丢弃"
+      ],
+      fixes: []
+    },
     {
       ver: "v1.2", date: "2026-09-12",
       features: [
@@ -1359,10 +1371,133 @@
   }
   function openBookmarks() { renderBookmarkList(); bm.overlay.hidden = false; }
   function closeBookmarks() { bm.overlay.hidden = true; }
+
+  /* ---------- 书签 txt 批量导入 ---------- */
+  // 解析导出格式：# 音频头 + 每行「时间  文本」；返回 {audioName, bookmarks}，无可识别行返回 null
+  function parseBookmarkFile(text) {
+    const lines = String(text).replace(/^\uFEFF/, "").split(/\r?\n/);
+    let audioName = "";
+    const out = [];
+    for (const raw of lines) {
+      const line = raw.trim();
+      if (!line) continue;
+      if (line.charAt(0) === "#") {
+        const hm = line.match(/^#\s*音频\s*[：:]\s*(.+?)\s*$/);
+        if (hm) audioName = hm[1];
+        continue;
+      }
+      const m = line.match(/^(?:(\d+):)?(\d{1,2}):(\d{1,2})(?:[.,](\d{1,3}))?\s+(.*)$/);
+      if (m) {
+        const h = m[1] ? parseInt(m[1], 10) : 0;
+        const min = parseInt(m[2], 10), sec = parseInt(m[3], 10);
+        if (min > 59 || sec > 59) continue;   // 99:99 这类非法时刻跳过
+        const frac = m[4] ? parseInt(m[4].padEnd(3, "0"), 10) / 1000 : 0;
+        const t = h * 3600 + min * 60 + sec + frac;
+        let txt = (m[5] || "").trim();
+        if (txt === "(无字幕)") txt = "";
+        if (isFinite(t)) out.push({ t: t, text: txt });
+      }
+    }
+    if (!out.length) return null;
+    return { audioName: audioName, bookmarks: out };
+  }
+  // 合并进已有书签：±0.5s 内覆盖（文本以新文件非空值为准），否则新增；返回新增条数
+  function mergeBookmarks(target, incoming) {
+    let added = 0;
+    for (const b of incoming) {
+      const near = target.find(x => Math.abs(x.t - b.t) <= 0.5);
+      if (near) { near.t = b.t; if (b.text) near.text = b.text; }
+      else { target.push({ t: b.t, text: b.text }); added++; }
+    }
+    target.sort((a, c) => a.t - c.t);
+    return added;
+  }
+  function importBookmarkFiles(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    const parsed = [];
+    const skippedParse = [];
+    Promise.all(files.map(f => f.text().then(t => {
+      const r = parseBookmarkFile(t);
+      if (r) {
+        // 文件头缺音频名时，用文件名「xxx-书签.txt」的 xxx 兜底
+        const name = r.audioName || f.name.replace(/-\s*书签\.txt$/i, "").replace(/\.txt$/i, "");
+        parsed.push({ file: f.name, audioName: name, bookmarks: r.bookmarks });
+      } else {
+        skippedParse.push(f.name);
+      }
+    }).catch(() => { skippedParse.push(f.name + "（读取失败）"); })))
+    .then(() => {
+      if (serverOK) {
+        return srvJSON("/api/list").then(d => {
+          const items = (d && d.items) || [];
+          const saves = [];
+          const skippedNoMatch = [];
+          let totalAdded = 0, matchedFiles = 0;
+          for (const p of parsed) {
+            const it = items.find(x => baseName(x.audioPath || x.audio || "") === p.audioName);
+            if (!it) { skippedNoMatch.push(p.file + "（列表中无「" + p.audioName + "」）"); continue; }
+            const target = Array.isArray(it.bookmarks) ? it.bookmarks.slice() : [];
+            totalAdded += mergeBookmarks(target, p.bookmarks);
+            matchedFiles++;
+            saves.push(srvPost("/api/bookmarks", {
+              audioPath: it.audioPath || "", audio: it.audio || "", bookmarks: target,
+            }));
+            if (currentRecord && sameEntry(it, currentRecord)) {
+              currentRecord.bookmarks = target;
+            }
+          }
+          return Promise.all(saves).then(() => {
+            renderPlaylist();
+            renderBookmarkMarks();
+            if (!bm.overlay.hidden) renderBookmarkList();
+            reportImport(matchedFiles, totalAdded, skippedNoMatch, skippedParse);
+          });
+        });
+      }
+      return dbGetAll().then(recs => {
+        const saves = [];
+        const skippedNoMatch = [];
+        let totalAdded = 0, matchedFiles = 0;
+        for (const p of parsed) {
+          const rec = recs.find(r => (r.audioName || "") === p.audioName);
+          if (!rec) { skippedNoMatch.push(p.file + "（列表中无「" + p.audioName + "」）"); continue; }
+          if (!Array.isArray(rec.bookmarks)) rec.bookmarks = [];
+          totalAdded += mergeBookmarks(rec.bookmarks, p.bookmarks);
+          matchedFiles++;
+          saves.push(dbPut(rec));
+          if (currentRecord && currentRecord.id === rec.id) {
+            currentRecord.bookmarks = rec.bookmarks;
+          }
+        }
+        return Promise.all(saves).then(() => {
+          renderPlaylist();
+          renderBookmarkMarks();
+          if (!bm.overlay.hidden) renderBookmarkList();
+          reportImport(matchedFiles, totalAdded, skippedNoMatch, skippedParse);
+        });
+      });
+    });
+  }
+  function reportImport(matchedFiles, totalAdded, skippedNoMatch, skippedParse) {
+    notify("已导入 " + matchedFiles + " 份书签文件，新增 " + totalAdded + " 个书签（重复时刻已合并）");
+    const miss = skippedNoMatch.concat(skippedParse.map(n => n + "（不是书签文件格式）"));
+    if (miss.length) {
+      alert("有 " + miss.length + " 份文件未导入：\n\n" + miss.slice(0, 10).join("\n") +
+        (miss.length > 10 ? "\n…等" : "") +
+        "\n\n提示：先通过「选择音频」把音频加入列表，书签才能对号入座。");
+    }
+  }
   document.getElementById("btn-bookmark").addEventListener("click", addBookmark);
   document.getElementById("btn-bm-list").addEventListener("click", openBookmarks);
   document.getElementById("bm-close").addEventListener("click", closeBookmarks);
   document.getElementById("bm-clear").addEventListener("click", clearBookmarks);
+  const bmImportInput = document.getElementById("bm-import-input");
+  document.getElementById("bm-import").addEventListener("click", () => bmImportInput.click());
+  bmImportInput.addEventListener("change", () => {
+    importBookmarkFiles(bmImportInput.files);
+    bmImportInput.value = "";   // 允许重复选择同一文件
+  });
   bm.overlay.addEventListener("click", e => { if (e.target === bm.overlay) closeBookmarks(); });
   /* 切换音频/字幕前拦截未保存的修改 */
   function guardUnsaved() {
